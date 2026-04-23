@@ -81,6 +81,15 @@ but you can use conda as well:
 $ conda env create -f conda_environment.yaml
 ```
 
+If you are on a shared cluster node without `sudo`, or on a non-Ubuntu Linux machine where the apt command above is not available, use the rootless environment file instead:
+```console
+$ mamba env create -f conda_environment_nosudo.yaml
+$ conda activate robodiff
+$ conda env config vars set MUJOCO_GL=egl PYOPENGL_PLATFORM=egl
+$ conda deactivate && conda activate robodiff
+```
+This installs conda equivalents for the MuJoCo system libraries (`mesalib`, `glfw`, `patchelf`, `glew`, `xorg-libx11`, `libglu`) and configures headless EGL rendering for `mujoco_py`.
+
 The `conda_environment_macos.yaml` file is only for development on MacOS and does not have full support for benchmarks.
 
 ### 🦾 Real Robot
