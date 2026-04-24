@@ -65,7 +65,7 @@ task:
   dataset:
     _target_: diffusion_policy.dataset.robomimic_replay_lowdim_dataset.RobomimicReplayLowdimDataset
     abs_action: false
-    dataset_path: data/robomimic_lowdim/datasets/lift/mh/low_dim.hdf5
+    dataset_path: data/robomimic/datasets/lift/mh/low_dim.hdf5
     horizon: 2
     obs_keys:
     - object
@@ -77,13 +77,13 @@ task:
     seed: 42
     use_legacy_normalizer: false
     val_ratio: 0.02
-  dataset_path: data/robomimic_lowdim/datasets/lift/mh/low_dim.hdf5
+  dataset_path: data/robomimic/datasets/lift/mh/low_dim.hdf5
   dataset_type: mh
   env_runner:
     _target_: diffusion_policy.env_runner.robomimic_lowdim_runner.RobomimicLowdimRunner
     abs_action: false
     crf: 22
-    dataset_path: data/robomimic_lowdim/datasets/lift/mh/low_dim.hdf5
+    dataset_path: data/robomimic/datasets/lift/mh/low_dim.hdf5
     fps: 10
     max_steps: 500
     n_action_steps: 1

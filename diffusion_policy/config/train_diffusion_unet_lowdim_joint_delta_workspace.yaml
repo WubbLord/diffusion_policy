@@ -1,0 +1,20 @@
+defaults:
+  - train_diffusion_unet_lowdim_workspace
+  - override task: can_lowdim_joint_delta
+  - _self_
+
+name: train_diffusion_unet_lowdim_joint_delta
+task_name: ${task.name}
+exp_name: "joint_delta"
+
+training:
+  rollout_every: null
+
+logging:
+  tags: ["${name}", "${task_name}", "${exp_name}"]
+
+checkpoint:
+  topk:
+    monitor_key: val_loss
+    mode: min
+    format_str: 'epoch={epoch:04d}-val_loss={val_loss:.3f}.ckpt'

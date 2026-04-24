@@ -1,0 +1,36 @@
+name: can_lowdim_joint_delta
+
+# object(14) + eef_pos(3) + eef_quat(4) + gripper_qpos(2) + joint_pos(7)
+obs_dim: 30
+# robot0_joint_pos[t + 1] - robot0_joint_pos[t] plus gripper command
+action_dim: 8
+keypoint_dim: 3
+
+obs_keys: &obs_keys [
+  'object',
+  'robot0_eef_pos',
+  'robot0_eef_quat',
+  'robot0_gripper_qpos',
+  'robot0_joint_pos'
+]
+task_name: &task_name can
+dataset_type: &dataset_type ph
+dataset_path: &dataset_path data/robomimic/datasets/${task.task_name}/${task.dataset_type}/low_dim.hdf5
+
+# Existing Robomimic runners expect OSC EEF actions. Joint-delta actions are
+# valid for dataset-loss training but should not be rolled out through that runner.
+env_runner: null
+
+dataset:
+  _target_: diffusion_policy.dataset.robomimic_replay_joint_delta_lowdim_dataset.RobomimicReplayJointDeltaLowdimDataset
+  dataset_path: *dataset_path
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1+${n_latency_steps}'}
+  pad_after: ${eval:'${n_action_steps}-1'}
+  obs_keys: *obs_keys
+  joint_pos_keys: ['robot0_joint_pos']
+  include_gripper: True
+  gripper_action_indices: [-1]
+  seed: 42
+  val_ratio: 0.02
+  max_train_episodes: null
