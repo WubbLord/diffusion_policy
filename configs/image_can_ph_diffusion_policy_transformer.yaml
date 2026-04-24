@@ -137,7 +137,7 @@ task:
   dataset:
     _target_: diffusion_policy.dataset.robomimic_replay_image_dataset.RobomimicReplayImageDataset
     abs_action: true
-    dataset_path: data/robomimic/datasets/can/ph/image_abs.hdf5
+    dataset_path: data/robomimic_image/datasets/can/ph/image_abs.hdf5
     horizon: 10
     n_obs_steps: 2
     pad_after: 7
@@ -172,13 +172,13 @@ task:
           - 2
     use_cache: true
     val_ratio: 0.02
-  dataset_path: data/robomimic/datasets/can/ph/image_abs.hdf5
+  dataset_path: data/robomimic_image/datasets/can/ph/image_abs.hdf5
   dataset_type: ph
   env_runner:
     _target_: diffusion_policy.env_runner.robomimic_image_runner.RobomimicImageRunner
     abs_action: true
     crf: 22
-    dataset_path: data/robomimic/datasets/can/ph/image_abs.hdf5
+    dataset_path: data/robomimic_image/datasets/can/ph/image_abs.hdf5
     fps: 10
     max_steps: 400
     n_action_steps: 8

@@ -51,7 +51,7 @@ task:
   dataset:
     _target_: diffusion_policy.dataset.robomimic_replay_lowdim_dataset.RobomimicReplayLowdimDataset
     abs_action: false
-    dataset_path: data/robomimic/datasets/transport/ph/low_dim.hdf5
+    dataset_path: data/robomimic_lowdim/datasets/transport/ph/low_dim.hdf5
     horizon: 10
     obs_keys:
     - object
@@ -65,13 +65,13 @@ task:
     pad_before: 0
     seed: 42
     val_ratio: 0.02
-  dataset_path: data/robomimic/datasets/transport/ph/low_dim.hdf5
+  dataset_path: data/robomimic_lowdim/datasets/transport/ph/low_dim.hdf5
   dataset_type: ph
   env_runner:
     _target_: diffusion_policy.env_runner.robomimic_lowdim_runner.RobomimicLowdimRunner
     abs_action: false
     crf: 22
-    dataset_path: data/robomimic/datasets/transport/ph/low_dim.hdf5
+    dataset_path: data/robomimic_lowdim/datasets/transport/ph/low_dim.hdf5
     fps: 10
     max_steps: 700
     n_action_steps: 1
