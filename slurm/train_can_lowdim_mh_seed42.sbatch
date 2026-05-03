@@ -3,7 +3,7 @@
 #SBATCH --output=/data/scratch/zhangbr/diffusion_policy/slurm/logs/%x-%j.out
 #SBATCH --error=/data/scratch/zhangbr/diffusion_policy/slurm/logs/%x-%j.err
 #SBATCH -p csail-shared-h200
-#SBATCH -t 08:00:00
+#SBATCH -t 12:00:00
 #SBATCH --mem=120G
 #SBATCH --gres=gpu:h200:1
 #SBATCH --qos=lab-free

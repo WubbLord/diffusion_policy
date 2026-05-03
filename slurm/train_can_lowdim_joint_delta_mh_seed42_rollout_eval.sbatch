@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=dp_can_lowdim_joint_mh_s42
+#SBATCH --job-name=dp_can_joint_eval_mh_s42
 #SBATCH --output=/data/scratch/zhangbr/diffusion_policy/slurm/logs/%x-%j.out
 #SBATCH --error=/data/scratch/zhangbr/diffusion_policy/slurm/logs/%x-%j.err
 #SBATCH -p csail-shared-h200
@@ -26,4 +26,8 @@ python train.py \
     task.dataset_type=mh \
     training.seed=42 \
     training.device=cuda:0 \
-    training.num_epochs=5000
+    training.num_epochs=5000 \
+    training.rollout_every=50 \
+    training.checkpoint_every=50 \
+    checkpoint.topk.k=0 \
+    checkpoint.save_last_ckpt=True
