@@ -1,19 +1,17 @@
-name: can_lowdim_joint_delta
+name: transport_lowdim_joint_delta
 
-# object(14) + eef_pos(3) + eef_quat(4) + gripper_qpos(2) + joint_pos(7)
-obs_dim: 30
-# robot0_joint_pos[t + 1] - robot0_joint_pos[t] plus gripper command
-action_dim: 8
+# object(41) + (eef_pos(3) + eef_quat(4) + gripper_qpos(2) + joint_pos(7))*2
+obs_dim: 73
+# robot0 and robot1 joint deltas plus one gripper command per arm
+action_dim: 16
 keypoint_dim: 3
 
 obs_keys: &obs_keys [
   'object',
-  'robot0_eef_pos',
-  'robot0_eef_quat',
-  'robot0_gripper_qpos',
-  'robot0_joint_pos'
+  'robot0_eef_pos', 'robot0_eef_quat', 'robot0_gripper_qpos', 'robot0_joint_pos',
+  'robot1_eef_pos', 'robot1_eef_quat', 'robot1_gripper_qpos', 'robot1_joint_pos'
 ]
-task_name: &task_name can
+task_name: &task_name transport
 dataset_type: &dataset_type ph
 dataset_path: &dataset_path data/robomimic/datasets/${task.task_name}/${task.dataset_type}/low_dim.hdf5
 
@@ -36,9 +34,9 @@ env_runner:
   crf: 22
   past_action: ${past_action_visible}
   n_envs: 28
-  n_robots: 1
-  joint_dims: [7]
-  gripper_dims: [1]
+  n_robots: 2
+  joint_dims: [7, 7]
+  gripper_dims: [1, 1]
   joint_delta_scale: 0.05
   joint_action_mode: delta
   input_action_layout: joints_then_grippers
@@ -50,10 +48,10 @@ dataset:
   pad_before: ${eval:'${n_obs_steps}-1+${n_latency_steps}'}
   pad_after: ${eval:'${n_action_steps}-1'}
   obs_keys: *obs_keys
-  joint_pos_keys: ['robot0_joint_pos']
+  joint_pos_keys: ['robot0_joint_pos', 'robot1_joint_pos']
   joint_action_mode: delta
   include_gripper: True
-  gripper_action_indices: [-1]
+  gripper_action_indices: [6, 13]
   seed: 42
   val_ratio: 0.02
   max_train_episodes: null
@@ -61,7 +59,7 @@ dataset:
 action_mse_slices:
   - name: joint
     start: 0
-    end: 7
+    end: 14
   - name: gripper
-    start: 7
-    end: 8
+    start: 14
+    end: 16

@@ -1,7 +1,7 @@
-name: can_lowdim_joint_delta
+name: lift_lowdim_joint_delta
 
-# object(14) + eef_pos(3) + eef_quat(4) + gripper_qpos(2) + joint_pos(7)
-obs_dim: 30
+# object(10) + eef_pos(3) + eef_quat(4) + gripper_qpos(2) + joint_pos(7)
+obs_dim: 26
 # robot0_joint_pos[t + 1] - robot0_joint_pos[t] plus gripper command
 action_dim: 8
 keypoint_dim: 3
@@ -13,7 +13,7 @@ obs_keys: &obs_keys [
   'robot0_gripper_qpos',
   'robot0_joint_pos'
 ]
-task_name: &task_name can
+task_name: &task_name lift
 dataset_type: &dataset_type ph
 dataset_path: &dataset_path data/robomimic/datasets/${task.task_name}/${task.dataset_type}/low_dim.hdf5
 

@@ -141,3 +141,5 @@ dmypy.json
 
 # BRIAN
 .codex
+slurm/logs/
+

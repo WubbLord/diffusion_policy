@@ -107,7 +107,8 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
 
         # configure env runner
         env_runner: BaseLowdimRunner = None
-        if cfg.task.env_runner is not None:
+        if (cfg.task.env_runner is not None) \
+                and (cfg.training.rollout_every is not None):
             env_runner = hydra.utils.instantiate(
                 cfg.task.env_runner,
                 output_dir=self.output_dir)
@@ -258,6 +259,15 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
                         mse = torch.nn.functional.mse_loss(pred_action, gt_action)
                         # log
                         step_log['train_action_mse_error'] = mse.item()
+                        if 'action_mse_slices' in cfg.task:
+                            for slice_cfg in cfg.task.action_mse_slices:
+                                start = int(slice_cfg.start)
+                                end = int(slice_cfg.end)
+                                slice_mse = torch.nn.functional.mse_loss(
+                                    pred_action[..., start:end],
+                                    gt_action[..., start:end])
+                                name = str(slice_cfg.name)
+                                step_log[f'train_action_{name}_mse_error'] = slice_mse.item()
                         # release RAM
                         del batch
                         del obs_dict

@@ -169,6 +169,49 @@ data/outputs/2023.03.01/20.02.03_train_diffusion_unet_hybrid_pusht_image
 3 directories, 13 files
 ```
 
+### Robomimic Low-Dim Joint-Space Training
+The published Robomimic low-dim diffusion configs train on end-effector actions. This repo also includes offline joint-space variants that keep the same low-dim U-Net training pipeline, but replace the action label with joint targets extracted from raw Robomimic `low_dim.hdf5` files.
+
+The raw Robomimic actions are OSC end-effector commands, not commanded joint actions. The joint-space dataset derives supervised arm labels from low-dim observations:
+```text
+joint_delta[t] = obs/robot*_joint_pos[t + 1] - obs/robot*_joint_pos[t]
+```
+It appends the original gripper action scalar(s), because those channels are already gripper commands. The object state and end-effector state remain in the observation, and `robot*_joint_pos` is added to the observation.
+
+Available joint-delta task configs:
+```text
+can_lowdim_joint_delta
+lift_lowdim_joint_delta
+square_lowdim_joint_delta
+tool_hang_lowdim_joint_delta
+transport_lowdim_joint_delta
+```
+The joint dataset also accepts `task.dataset.joint_action_mode=next_pos` to predict `joint_pos[t + 1]`, or `task.dataset.joint_action_mode=velocity` to predict `obs/robot*_joint_vel`, but the provided configs default to `delta`.
+
+Run `can/ph` joint-delta training on GPU 0:
+```console
+(robodiff)[diffusion_policy]$ python train.py --config-name=train_diffusion_unet_lowdim_joint_delta_workspace training.device=cuda:0 training.num_epochs=5000 logging.mode=offline
+```
+
+Run a different Robomimic task by overriding `task`:
+```console
+(robodiff)[diffusion_policy]$ python train.py --config-name=train_diffusion_unet_lowdim_joint_delta_workspace task=square_lowdim_joint_delta training.device=cuda:0 training.num_epochs=5000 logging.mode=offline
+```
+
+Use machine-human data instead of proficient-human data with:
+```console
+(robodiff)[diffusion_policy]$ python train.py --config-name=train_diffusion_unet_lowdim_joint_delta_workspace task=square_lowdim_joint_delta task.dataset_type=mh training.device=cuda:0 logging.mode=offline
+```
+
+The joint-delta task configs include a `RobomimicJointLowdimRunner` for evaluation. Training still defaults to dataset-loss validation only because `train_diffusion_unet_lowdim_joint_delta_workspace.yaml` sets `training.rollout_every: null`; standalone `eval.py` uses the saved runner config to produce rollout metrics and videos. The runner switches Robosuite to `JOINT_POSITION`, scales predicted physical joint deltas by `joint_delta_scale: 0.05` into the controller's normalized input range, and keeps the gripper channels as direct gripper commands.
+
+Evaluate a joint-delta checkpoint:
+```console
+(robodiff)[diffusion_policy]$ python eval.py --checkpoint data/outputs/YYYY.MM.DD/HH.MM.SS_train_diffusion_unet_lowdim_joint_delta_can_lowdim_joint_delta/checkpoints/latest.ckpt --output_dir data/eval_can_joint_delta --device cuda:0
+```
+
+Checkpoints created before the joint eval runner was added saved `task.env_runner: null`. `eval.py` detects those legacy joint-delta checkpoints and patches in the default `RobomimicJointLowdimRunner` at eval time.
+
 ### Running for multiple seeds
 Launch local ray cluster. For large scale experiments, you might want to setup an [AWS cluster with autoscaling](https://docs.ray.io/en/master/cluster/vms/user-guides/launching-clusters/aws.html). All other commands remain the same.
 ```console

@@ -1,4 +1,4 @@
-name: can_lowdim_joint_delta
+name: square_lowdim_joint_delta
 
 # object(14) + eef_pos(3) + eef_quat(4) + gripper_qpos(2) + joint_pos(7)
 obs_dim: 30
@@ -13,7 +13,7 @@ obs_keys: &obs_keys [
   'robot0_gripper_qpos',
   'robot0_joint_pos'
 ]
-task_name: &task_name can
+task_name: &task_name square
 dataset_type: &dataset_type ph
 dataset_path: &dataset_path data/robomimic/datasets/${task.task_name}/${task.dataset_type}/low_dim.hdf5
 
