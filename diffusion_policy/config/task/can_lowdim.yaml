@@ -43,3 +43,7 @@ dataset:
   use_legacy_normalizer: False
   seed: 42
   val_ratio: 0.02
+  # Per-key Gaussian noise std injected into obs at __getitem__ (raw scale,
+  # pre-normalization). Use to simulate noisy CV pose estimates instead of GT.
+  # Override at runtime e.g. task.dataset.obs_noise_std={object:0.005}
+  obs_noise_std: null

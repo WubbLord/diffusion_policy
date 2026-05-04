@@ -51,6 +51,7 @@ class RobomimicReplayJointDeltaLowdimDataset(BaseLowdimDataset):
             seed=42,
             val_ratio=0.0,
             max_train_episodes=None,
+            obs_noise_std: Optional[Dict[str, float]] = None,
         ):
         obs_keys = list(obs_keys)
         joint_pos_keys = list(joint_pos_keys)
@@ -115,6 +116,20 @@ class RobomimicReplayJointDeltaLowdimDataset(BaseLowdimDataset):
         self.pad_after = pad_after
         self.joint_action_mode = joint_action_mode
 
+        # Track per-key slices in concatenated obs so per-key Gaussian noise can
+        # be injected at __getitem__ (simulates noisy CV pose estimates).
+        obs_key_slices = {}
+        with h5py.File(dataset_path, "r") as _f:
+            _first = _f["data"]["demo_0"]["obs"]
+            _off = 0
+            for _k in obs_keys:
+                _d = int(_first[_k].shape[-1])
+                obs_key_slices[_k] = slice(_off, _off + _d)
+                _off += _d
+        self.obs_keys = obs_keys
+        self.obs_key_slices = obs_key_slices
+        self.obs_noise_std = dict(obs_noise_std) if obs_noise_std else {}
+
     def get_validation_dataset(self):
         val_set = copy.copy(self)
         val_set.sampler = SequenceSampler(
@@ -142,6 +157,14 @@ class RobomimicReplayJointDeltaLowdimDataset(BaseLowdimDataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         data = self.sampler.sample_sequence(idx)
+        if self.obs_noise_std:
+            obs = data["obs"].copy()
+            for k, std in self.obs_noise_std.items():
+                if std and std > 0 and k in self.obs_key_slices:
+                    sl = self.obs_key_slices[k]
+                    noise = np.random.randn(*obs[..., sl].shape).astype(np.float32) * float(std)
+                    obs[..., sl] = obs[..., sl] + noise
+            data["obs"] = obs
         return dict_apply(data, torch.from_numpy)
 
 

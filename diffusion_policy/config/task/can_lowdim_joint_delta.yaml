@@ -65,3 +65,7 @@ action_mse_slices:
   - name: gripper
     start: 7
     end: 8
+  # Per-key Gaussian noise std injected into obs at __getitem__ (raw scale,
+  # pre-normalization). Use to simulate noisy CV pose estimates instead of GT.
+  # Override at runtime e.g. task.dataset.obs_noise_std={object:0.005}
+  obs_noise_std: null

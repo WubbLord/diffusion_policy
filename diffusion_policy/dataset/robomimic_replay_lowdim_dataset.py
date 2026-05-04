@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 import torch
 import numpy as np
 import h5py
@@ -34,7 +34,8 @@ class RobomimicReplayLowdimDataset(BaseLowdimDataset):
             use_legacy_normalizer=False,
             seed=42,
             val_ratio=0.0,
-            max_train_episodes=None
+            max_train_episodes=None,
+            obs_noise_std: Optional[Dict[str, float]] = None,
         ):
         obs_keys = list(obs_keys)
         rotation_transformer = RotationTransformer(
@@ -78,7 +79,21 @@ class RobomimicReplayLowdimDataset(BaseLowdimDataset):
         self.pad_before = pad_before
         self.pad_after = pad_after
         self.use_legacy_normalizer = use_legacy_normalizer
-    
+
+        # Track per-key slices in concatenated obs so per-key Gaussian noise can
+        # be injected at __getitem__ (simulates noisy CV pose estimates).
+        obs_key_slices = {}
+        with h5py.File(dataset_path, "r") as _f:
+            _first = _f["data"]["demo_0"]["obs"]
+            _off = 0
+            for _k in obs_keys:
+                _d = int(_first[_k].shape[-1])
+                obs_key_slices[_k] = slice(_off, _off + _d)
+                _off += _d
+        self.obs_keys = obs_keys
+        self.obs_key_slices = obs_key_slices
+        self.obs_noise_std = dict(obs_noise_std) if obs_noise_std else {}
+
     def get_validation_dataset(self):
         val_set = copy.copy(self)
         val_set.sampler = SequenceSampler(
@@ -125,6 +140,14 @@ class RobomimicReplayLowdimDataset(BaseLowdimDataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         data = self.sampler.sample_sequence(idx)
+        if self.obs_noise_std:
+            obs = data["obs"].copy()
+            for k, std in self.obs_noise_std.items():
+                if std and std > 0 and k in self.obs_key_slices:
+                    sl = self.obs_key_slices[k]
+                    noise = np.random.randn(*obs[..., sl].shape).astype(np.float32) * float(std)
+                    obs[..., sl] = obs[..., sl] + noise
+            data["obs"] = obs
         torch_data = dict_apply(data, torch.from_numpy)
         return torch_data
 
