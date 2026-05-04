@@ -65,10 +65,18 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
 
         # resume training
         if cfg.training.resume:
-            lastest_ckpt_path = self.get_checkpoint_path()
-            if lastest_ckpt_path.is_file():
-                print(f"Resuming from checkpoint {lastest_ckpt_path}")
-                self.load_checkpoint(path=lastest_ckpt_path)
+            resume_ckpt_path = cfg.training.get('resume_ckpt_path', None)
+            if resume_ckpt_path is not None:
+                resume_ckpt_path = pathlib.Path(resume_ckpt_path).expanduser()
+            else:
+                resume_ckpt_path = self.get_checkpoint_path()
+            if resume_ckpt_path.is_file():
+                print(f"Resuming from checkpoint {resume_ckpt_path}")
+                self.load_checkpoint(path=resume_ckpt_path)
+            elif cfg.training.get('resume_ckpt_path', None) is not None:
+                raise FileNotFoundError(
+                    f"Requested resume checkpoint does not exist: "
+                    f"{resume_ckpt_path}")
 
         # configure dataset
         dataset: BaseLowdimDataset
@@ -154,7 +162,7 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
         # training loop
         log_path = os.path.join(self.output_dir, 'logs.json.txt')
         with JsonLogger(log_path) as json_logger:
-            for local_epoch_idx in range(cfg.training.num_epochs):
+            while self.epoch < cfg.training.num_epochs:
                 step_log = dict()
                 # ========= train for this epoch ==========
                 train_losses = list()

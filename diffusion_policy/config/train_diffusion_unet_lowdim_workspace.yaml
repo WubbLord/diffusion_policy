@@ -93,6 +93,7 @@ training:
   seed: 42
   debug: False
   resume: True
+  resume_ckpt_path: null
   # optimization
   lr_scheduler: cosine
   lr_warmup_steps: 500
