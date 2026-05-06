@@ -6,11 +6,17 @@
 #SBATCH -t 12:00:00
 #SBATCH --mem=120G
 #SBATCH --gres=gpu:h200:1
-#SBATCH --qos=lab-free
+#SBATCH --qos=shared-if-available
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
+#SBATCH --requeue
 
 set -euo pipefail
+
+if [ "$#" -gt 2 ]; then
+    echo "Usage: sbatch $0 [RESUME_CKPT] [TOTAL_EPOCHS]" >&2
+    exit 2
+fi
 
 REPO_DIR=/data/scratch/zhangbr/diffusion_policy
 cd "$REPO_DIR"
@@ -19,7 +25,8 @@ source /data/scratch/zhangbr/miniforge3/etc/profile.d/conda.sh
 conda activate /data/scratch/zhangbr/.conda/envs/robodiff
 : "${WANDB_API_KEY:?Set WANDB_API_KEY before submitting this job}"
 export WANDB_API_KEY
-TOTAL_EPOCHS="${TOTAL_EPOCHS:-5000}"
+RESUME_CKPT="${1:-${RESUME_CKPT:-}}"
+TOTAL_EPOCHS="${2:-${TOTAL_EPOCHS:-5000}}"
 RESUME_ARGS=()
 if [ -n "${RESUME_CKPT:-}" ]; then
     if [ ! -f "$RESUME_CKPT" ]; then
@@ -28,6 +35,12 @@ if [ -n "${RESUME_CKPT:-}" ]; then
     fi
     RESUME_ARGS=(training.resume=True training.resume_ckpt_path="$RESUME_CKPT")
 fi
+
+echo "job_id=${SLURM_JOB_ID}"
+echo "host=$(hostname)"
+echo "start=$(date --iso-8601=seconds)"
+echo "resume_ckpt=${RESUME_CKPT:-<none>}"
+echo "total_epochs=${TOTAL_EPOCHS}"
 
 python train.py \
     --config-name=train_diffusion_unet_lowdim_workspace \
