@@ -49,6 +49,8 @@ def main():
     parser.add_argument("--joint-delta-scale", default=None)
     parser.add_argument("--n-envs", type=int, default=28)
     parser.add_argument("--max-demos", type=int, default=20)
+    parser.add_argument("--demo-start", type=int, default=0)
+    parser.add_argument("--demo-end", type=int, default=None)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -89,6 +91,7 @@ def main():
     env = AsyncVectorEnv([env_fn] * args.n_envs)
 
     demo_names = get_demo_names(dataset_path)
+    demo_names = demo_names[args.demo_start:args.demo_end]
     if args.max_demos is not None:
         demo_names = demo_names[:args.max_demos]
 
@@ -99,7 +102,8 @@ def main():
     timestep_all = []
 
     try:
-        for demo_idx, demo_name in enumerate(tqdm.tqdm(demo_names, desc="eval demos")):
+        for demo_name in tqdm.tqdm(demo_names, desc="eval demos"):
+            demo_idx = int(demo_name.split("_")[-1])
             with h5py.File(dataset_path, "r") as f:
                 demo = f[f"data/{demo_name}"]
                 states = np.asarray(demo["states"][:])

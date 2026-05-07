@@ -28,23 +28,48 @@ def parse_hidden_dims(value):
     return [int(x.strip()) for x in value.split(",") if x.strip()]
 
 
-def load_shards(dataset_dir, max_shards=None):
-    shard_paths = sorted((pathlib.Path(dataset_dir) / "shards").glob("demo_*.npz"))
+def demo_index_from_path(path):
+    return int(path.stem.split("_")[-1])
+
+
+def list_shards(dataset_dir, demo_start=None, demo_end=None, max_shards=None):
+    shard_paths = sorted(
+        (pathlib.Path(dataset_dir) / "shards").glob("demo_*.npz"),
+        key=demo_index_from_path,
+    )
+    if demo_start is not None:
+        shard_paths = [p for p in shard_paths if demo_index_from_path(p) >= demo_start]
+    if demo_end is not None:
+        shard_paths = [p for p in shard_paths if demo_index_from_path(p) < demo_end]
     if max_shards is not None:
         shard_paths = shard_paths[:max_shards]
+    return shard_paths
+
+
+def load_shards(dataset_dir, demo_start=None, demo_end=None, max_shards=None, desc="load shards"):
+    shard_paths = list_shards(
+        dataset_dir,
+        demo_start=demo_start,
+        demo_end=demo_end,
+        max_shards=max_shards,
+    )
     if not shard_paths:
-        raise FileNotFoundError(f"No shards found in {dataset_dir}/shards")
+        raise FileNotFoundError(
+            f"No shards found in {dataset_dir}/shards for "
+            f"demo_start={demo_start}, demo_end={demo_end}")
 
     states = []
     desired = []
     commands = []
     demo_delta = []
-    for path in tqdm.tqdm(shard_paths, desc="load shards"):
+    demo_ids = []
+    for path in tqdm.tqdm(shard_paths, desc=desc):
         data = np.load(path)
         states.append(data["state"].astype(np.float32))
         desired.append(data["desired_delta"].astype(np.float32))
         commands.append(data["command"].astype(np.float32))
         demo_delta.append(data["demo_delta"].astype(np.float32))
+        demo_ids.append(demo_index_from_path(path))
 
     state = np.concatenate(states, axis=0)
     desired_delta = np.concatenate(desired, axis=0)
@@ -58,6 +83,7 @@ def load_shards(dataset_dir, max_shards=None):
         "command": command,
         "demo_delta": demo_delta,
         "n_shards": len(shard_paths),
+        "demo_ids": demo_ids,
     }
 
 
@@ -105,6 +131,10 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--max-shards", type=int, default=None)
+    parser.add_argument("--train-demo-start", type=int, default=None)
+    parser.add_argument("--train-demo-end", type=int, default=None)
+    parser.add_argument("--val-demo-start", type=int, default=None)
+    parser.add_argument("--val-demo-end", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -118,14 +148,41 @@ def main():
     np.random.seed(args.seed)
 
     metadata = load_json(pathlib.Path(args.dataset_dir) / "metadata.json")
-    arrays = load_shards(args.dataset_dir, max_shards=args.max_shards)
-    x = arrays["x"]
-    command = arrays["command"]
     command_scale = np.asarray(metadata["joint_delta_scale"], dtype=np.float32)
 
-    train_idx, val_idx = make_split(len(x), args.val_ratio, args.seed)
-    input_stats_np = compute_normalizer(x[train_idx])
-    command_stats_np = compute_normalizer(command[train_idx])
+    train_arrays = load_shards(
+        args.dataset_dir,
+        demo_start=args.train_demo_start,
+        demo_end=args.train_demo_end,
+        max_shards=args.max_shards,
+        desc="load train shards",
+    )
+    if args.val_demo_start is not None or args.val_demo_end is not None:
+        val_arrays = load_shards(
+            args.dataset_dir,
+            demo_start=args.val_demo_start,
+            demo_end=args.val_demo_end,
+            max_shards=None,
+            desc="load val shards",
+        )
+        x_train = train_arrays["x"]
+        command_train = train_arrays["command"]
+        x_val = val_arrays["x"]
+        command_val = val_arrays["command"]
+        split_mode = "heldout_demo"
+    else:
+        x = train_arrays["x"]
+        command = train_arrays["command"]
+        train_idx, val_idx = make_split(len(x), args.val_ratio, args.seed)
+        x_train = x[train_idx]
+        command_train = command[train_idx]
+        x_val = x[val_idx]
+        command_val = command[val_idx]
+        val_arrays = None
+        split_mode = "random_row"
+
+    input_stats_np = compute_normalizer(x_train)
+    command_stats_np = compute_normalizer(command_train)
 
     device = torch.device(args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu")
     input_stats = {
@@ -138,12 +195,12 @@ def main():
     }
 
     train_ds = TensorDataset(
-        torch.as_tensor(x[train_idx], dtype=torch.float32),
-        torch.as_tensor(command[train_idx], dtype=torch.float32),
+        torch.as_tensor(x_train, dtype=torch.float32),
+        torch.as_tensor(command_train, dtype=torch.float32),
     )
     val_ds = TensorDataset(
-        torch.as_tensor(x[val_idx], dtype=torch.float32),
-        torch.as_tensor(command[val_idx], dtype=torch.float32),
+        torch.as_tensor(x_val, dtype=torch.float32),
+        torch.as_tensor(command_val, dtype=torch.float32),
     )
     train_loader = DataLoader(
         train_ds,
@@ -163,8 +220,8 @@ def main():
     )
 
     model_config = {
-        "input_dim": int(x.shape[-1]),
-        "output_dim": int(command.shape[-1]),
+        "input_dim": int(x_train.shape[-1]),
+        "output_dim": int(command_train.shape[-1]),
         "hidden_dims": parse_hidden_dims(args.hidden_dims),
         "activation": args.activation,
         "layer_norm": not args.no_layer_norm,
@@ -180,9 +237,13 @@ def main():
     run_config = {
         "args": vars(args),
         "dataset_metadata": metadata,
-        "n_samples": int(len(x)),
-        "n_train": int(len(train_idx)),
-        "n_val": int(len(val_idx)),
+        "split_mode": split_mode,
+        "n_train": int(len(x_train)),
+        "n_val": int(len(x_val)),
+        "train_demo_ids": train_arrays["demo_ids"],
+        "val_demo_ids": [] if val_arrays is None else val_arrays["demo_ids"],
+        "n_train_shards": int(train_arrays["n_shards"]),
+        "n_val_shards": 0 if val_arrays is None else int(val_arrays["n_shards"]),
         "model_config": model_config,
         "device": str(device),
     }
