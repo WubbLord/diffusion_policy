@@ -20,6 +20,7 @@ from diffusion_policy.common.pytorch_util import dict_apply
 from diffusion_policy.env_runner.base_lowdim_runner import BaseLowdimRunner
 from diffusion_policy.env_runner.robomimic_lowdim_runner import create_env
 from diffusion_policy.env.robomimic.robomimic_lowdim_wrapper import RobomimicLowdimWrapper
+from reverse_controller.common import load_inverse_checkpoint, predict_command
 
 import robomimic.utils.file_utils as FileUtils
 from robosuite.controllers import load_controller_config
@@ -98,6 +99,109 @@ def _make_joint_position_controller_configs(joint_delta_scales):
     return controller_configs
 
 
+class RobomimicJointAdapterLowdimWrapper(RobomimicLowdimWrapper):
+    """Lowdim wrapper that turns desired joint deltas into JOINT_POSITION commands.
+
+    The wrapped policy action is [desired_dq, gripper]. At every low-level
+    env.step, the wrapper reads the current raw robosuite observation, evaluates
+    f(state, desired_dq), converts the physical command to normalized
+    JOINT_POSITION controller space, and steps the underlying robomimic env.
+    """
+
+    def __init__(
+            self,
+            env,
+            obs_keys,
+            adapter_checkpoint,
+            adapter_obs_keys=None,
+            adapter_device='cpu',
+            joint_key='robot0_joint_pos',
+            joint_dim=7,
+            gripper_dim=1,
+            command_scale=None,
+            init_state=None,
+            render_hw=(256, 256),
+            render_camera_name='agentview'):
+        super().__init__(
+            env=env,
+            obs_keys=obs_keys,
+            init_state=init_state,
+            render_hw=render_hw,
+            render_camera_name=render_camera_name)
+
+        payload, model, normalizer = load_inverse_checkpoint(
+            adapter_checkpoint, device=adapter_device)
+        metadata = payload.get('dataset_metadata', {})
+        if adapter_obs_keys is None:
+            adapter_obs_keys = metadata.get('obs_keys', [
+                'object',
+                'robot0_eef_pos',
+                'robot0_eef_quat',
+                'robot0_gripper_qpos',
+                'robot0_joint_pos',
+                'robot0_joint_vel',
+            ])
+        if command_scale is None:
+            command_scale = metadata.get('joint_delta_scale', [0.25] * joint_dim)
+
+        self.adapter_checkpoint = adapter_checkpoint
+        self.adapter_obs_keys = list(adapter_obs_keys)
+        self.adapter_model = model
+        self.adapter_normalizer = normalizer
+        self.joint_key = joint_key
+        self.joint_dim = int(joint_dim)
+        self.gripper_dim = int(gripper_dim)
+        self.command_scale = np.asarray(command_scale, dtype=np.float32)
+        if self.command_scale.shape == ():
+            self.command_scale = np.full(
+                (self.joint_dim,), float(self.command_scale), dtype=np.float32)
+        if self.command_scale.shape != (self.joint_dim,):
+            raise ValueError(
+                f"command_scale must have shape ({self.joint_dim},), "
+                f"got {self.command_scale.shape}.")
+
+    def _build_adapter_state(self, raw_obs):
+        missing = [key for key in self.adapter_obs_keys if key not in raw_obs]
+        if missing:
+            raise KeyError(
+                f"Current robomimic observation is missing adapter keys: {missing}")
+        return np.concatenate([
+            np.asarray(raw_obs[key], dtype=np.float32).reshape(-1)
+            for key in self.adapter_obs_keys
+        ], axis=0)
+
+    def _desired_action_to_controller_action(self, action):
+        action = np.asarray(action, dtype=np.float32)
+        expected_dim = self.joint_dim + self.gripper_dim
+        if action.shape[-1] != expected_dim:
+            raise RuntimeError(
+                "Adapter wrapper got invalid action dimension. Expected "
+                f"{expected_dim}, got {action.shape[-1]}.")
+
+        desired_delta = action[:self.joint_dim]
+        gripper = action[self.joint_dim:self.joint_dim + self.gripper_dim]
+        raw_obs = self.env.get_observation()
+        state = self._build_adapter_state(raw_obs)
+        command = predict_command(
+            model=self.adapter_model,
+            normalizer=self.adapter_normalizer,
+            state=state[None],
+            desired_delta=desired_delta[None],
+            command_scale=self.command_scale,
+        )[0].astype(np.float32)
+        arm_action = np.clip(command / self.command_scale, -1.0, 1.0)
+        gripper = np.clip(gripper, -1.0, 1.0)
+        return np.concatenate([arm_action, gripper], axis=0).astype(np.float32)
+
+    def step(self, action):
+        controller_action = self._desired_action_to_controller_action(action)
+        raw_obs, reward, done, info = self.env.step(controller_action)
+        obs = np.concatenate([
+            raw_obs[key] for key in self.obs_keys
+        ], axis=0)
+        return obs, reward, done, info
+
+
 class RobomimicJointLowdimRunner(BaseLowdimRunner):
     """Robomimic low-dim runner for joint-delta policies.
 
@@ -136,7 +240,11 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
             joint_action_mode='delta',
             input_action_layout='joints_then_grippers',
             clip_joint_action=True,
-            clip_gripper_action=True):
+            clip_gripper_action=True,
+            adapter_checkpoint=None,
+            adapter_obs_keys=None,
+            adapter_device='cpu',
+            adapter_joint_key='robot0_joint_pos'):
         super().__init__(output_dir)
 
         if joint_action_mode != 'delta':
@@ -176,22 +284,61 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
             gripper_dims, n_robots=n_robots, default=1, name='gripper_dims')
         joint_delta_scales = _expand_scale_per_robot(
             joint_delta_scale, joint_dims=joint_dims)
+        if adapter_checkpoint is not None:
+            if n_robots != 1:
+                raise ValueError(
+                    "adapter_checkpoint currently supports single-robot "
+                    f"robomimic tasks only, got n_robots={n_robots}.")
 
         env_meta['env_kwargs']['controller_configs'] = (
             _make_joint_position_controller_configs(joint_delta_scales))
+        env_obs_keys = list(obs_keys)
+        if adapter_checkpoint is not None:
+            payload, _, _ = load_inverse_checkpoint(
+                adapter_checkpoint, device=adapter_device)
+            adapter_metadata = payload.get('dataset_metadata', {})
+            if adapter_obs_keys is None:
+                adapter_obs_keys = adapter_metadata.get('obs_keys', [
+                    'object',
+                    'robot0_eef_pos',
+                    'robot0_eef_quat',
+                    'robot0_gripper_qpos',
+                    'robot0_joint_pos',
+                    'robot0_joint_vel',
+                ])
+            env_obs_keys = list(dict.fromkeys(
+                list(obs_keys) + list(adapter_obs_keys)))
+        else:
+            adapter_metadata = {}
 
         def env_fn():
             robomimic_env = create_env(
                 env_meta=env_meta,
-                obs_keys=obs_keys)
+                obs_keys=env_obs_keys)
+            if adapter_checkpoint is not None:
+                lowdim_env = RobomimicJointAdapterLowdimWrapper(
+                    env=robomimic_env,
+                    obs_keys=obs_keys,
+                    adapter_checkpoint=adapter_checkpoint,
+                    adapter_obs_keys=adapter_obs_keys,
+                    adapter_device=adapter_device,
+                    joint_key=adapter_joint_key,
+                    joint_dim=joint_dims[0],
+                    gripper_dim=gripper_dims[0],
+                    command_scale=joint_delta_scales[0],
+                    init_state=None,
+                    render_hw=render_hw,
+                    render_camera_name=render_camera_name)
+            else:
+                lowdim_env = RobomimicLowdimWrapper(
+                    env=robomimic_env,
+                    obs_keys=obs_keys,
+                    init_state=None,
+                    render_hw=render_hw,
+                    render_camera_name=render_camera_name)
             return MultiStepWrapper(
                 VideoRecordingWrapper(
-                    RobomimicLowdimWrapper(
-                        env=robomimic_env,
-                        obs_keys=obs_keys,
-                        init_state=None,
-                        render_hw=render_hw,
-                        render_camera_name=render_camera_name),
+                    lowdim_env,
                     video_recoder=VideoRecorder.create_h264(
                         fps=fps,
                         codec='h264',
@@ -284,6 +431,10 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
         self.clip_joint_action = clip_joint_action
         self.clip_gripper_action = clip_gripper_action
         self.expected_action_dim = sum(joint_dims) + sum(gripper_dims)
+        self.adapter_checkpoint = adapter_checkpoint
+        self.adapter_obs_keys = None if adapter_obs_keys is None else list(adapter_obs_keys)
+        self.adapter_device = adapter_device
+        self.adapter_metadata = adapter_metadata
 
     def run(self, policy: BaseLowdimPolicy):
         device = policy.device
@@ -380,6 +531,9 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
         return log_data
 
     def transform_action(self, action):
+        if self.adapter_checkpoint is not None:
+            return action.astype(np.float32)
+
         if action.shape[-1] != self.expected_action_dim:
             raise RuntimeError(
                 "Joint runner got invalid action dimension. Expected "

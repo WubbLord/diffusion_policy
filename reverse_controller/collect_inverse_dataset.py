@@ -35,9 +35,11 @@ from reverse_controller.common import (
 
 
 class JointProbeEnv:
-    def __init__(self, env_meta, joint_key):
-        self.env = create_env(env_meta=env_meta, obs_keys=[joint_key])
-        self.joint_key = joint_key
+    def __init__(self, env_meta, joint_keys):
+        if isinstance(joint_keys, str):
+            joint_keys = [joint_keys]
+        self.joint_keys = list(joint_keys)
+        self.env = create_env(env_meta=env_meta, obs_keys=self.joint_keys)
         self.action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
@@ -64,18 +66,29 @@ class JointProbeEnv:
         if close_fn is not None:
             close_fn()
 
-    def probe(self, sim_state, action, joint_key=None):
-        key = joint_key or self.joint_key
+    def probe(self, sim_state, action, joint_keys=None):
+        keys = list(joint_keys) if joint_keys is not None else self.joint_keys
         self.env.reset_to({"states": sim_state})
-        q_before = self.env.get_observation()[key].astype(np.float32).copy()
+        obs_before = self.env.get_observation()
+        q_before = np.concatenate([
+            obs_before[key].astype(np.float32).reshape(-1)
+            for key in keys
+        ], axis=0)
         self.env.step(action)
-        q_after = self.env.get_observation()[key].astype(np.float32).copy()
+        obs_after = self.env.get_observation()
+        q_after = np.concatenate([
+            obs_after[key].astype(np.float32).reshape(-1)
+            for key in keys
+        ], axis=0)
         return q_after - q_before
 
 
-def make_env_fn(env_meta, joint_key):
+def make_env_fn(env_meta, joint_keys):
+    if isinstance(joint_keys, str):
+        joint_keys = [joint_keys]
+
     def env_fn():
-        return JointProbeEnv(env_meta=env_meta, joint_key=joint_key)
+        return JointProbeEnv(env_meta=env_meta, joint_keys=joint_keys)
 
     return env_fn
 
@@ -114,11 +127,32 @@ def sample_commands(demo_delta, scale, n_samples, rng):
     return np.clip(commands, -scale, scale).astype(np.float32)
 
 
-def build_controller_action(command, gripper, scale):
-    arm_action = np.clip(command / scale, -1.0, 1.0)
+def build_controller_action(command, gripper, command_scales):
+    command = np.asarray(command, dtype=np.float32).reshape(-1)
     gripper = np.asarray(gripper, dtype=np.float32).reshape(-1)
     gripper = np.clip(gripper, -1.0, 1.0)
-    return np.concatenate([arm_action, gripper], axis=0).astype(np.float32)
+    if isinstance(command_scales, np.ndarray):
+        command_scales = [command_scales]
+    elif len(command_scales) > 0 and not isinstance(command_scales[0], np.ndarray):
+        command_scales = [np.asarray(command_scales, dtype=np.float32)]
+    if len(command_scales) != len(gripper):
+        raise ValueError(
+            "Expected one gripper command per robot. Got "
+            f"{len(command_scales)} robot command scales and {len(gripper)} grippers.")
+
+    parts = []
+    offset = 0
+    for robot_idx, scale in enumerate(command_scales):
+        joint_dim = len(scale)
+        robot_command = command[offset:offset + joint_dim]
+        offset += joint_dim
+        arm_action = np.clip(robot_command / scale, -1.0, 1.0)
+        parts.extend([arm_action, gripper[robot_idx:robot_idx + 1]])
+    if offset != len(command):
+        raise ValueError(
+            f"Unused command dimensions while building controller action: "
+            f"used {offset}, got {len(command)}.")
+    return np.concatenate(parts, axis=0).astype(np.float32)
 
 
 def collect_demo(
@@ -127,9 +161,10 @@ def collect_demo(
     demo_name,
     demo_idx,
     obs_keys,
-    joint_key,
+    joint_keys,
     gripper_action_indices,
     command_scale,
+    command_scales,
     samples_per_step,
     n_envs,
     rng,
@@ -152,10 +187,11 @@ def collect_demo(
 
         for t in range(n_steps):
             state = build_state_features(obs, obs_keys, t)
-            target_delta = (
-                np.asarray(next_obs[joint_key][t], dtype=np.float32)
-                - np.asarray(obs[joint_key][t], dtype=np.float32)
-            )
+            target_delta = np.concatenate([
+                np.asarray(next_obs[joint_key][t], dtype=np.float32).reshape(-1)
+                - np.asarray(obs[joint_key][t], dtype=np.float32).reshape(-1)
+                for joint_key in joint_keys
+            ], axis=0)
             sampled_commands = sample_commands(
                 target_delta,
                 scale=command_scale,
@@ -167,7 +203,7 @@ def collect_demo(
                 state_features.append(state)
                 demo_delta.append(target_delta)
                 commands.append(command)
-                env_actions.append(build_controller_action(command, gripper, command_scale))
+                env_actions.append(build_controller_action(command, gripper, command_scales))
                 demo_indices.append(demo_idx)
                 timestep_indices.append(t)
                 sample_indices.append(sample_idx)
@@ -186,7 +222,7 @@ def collect_demo(
     for start in range(0, len(commands), n_envs):
         end = min(start + n_envs, len(commands))
         args_list = [
-            (sim_states[i], env_actions[i], joint_key)
+            (sim_states[i], env_actions[i], joint_keys)
             for i in range(start, end)
         ]
         if len(args_list) < n_envs:
@@ -211,6 +247,7 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--obs-keys", default=",".join(DEFAULT_OBS_KEYS))
     parser.add_argument("--joint-key", default="robot0_joint_pos")
+    parser.add_argument("--joint-keys", default=None)
     parser.add_argument("--gripper-action-indices", default="-1")
     parser.add_argument("--joint-delta-scale", default="0.25")
     parser.add_argument("--samples-per-step", type=int, default=32)
@@ -234,19 +271,32 @@ def main():
         for idx in gripper_action_indices
     ]
 
+    joint_keys = parse_csv(args.joint_keys) if args.joint_keys is not None else [args.joint_key]
     with h5py.File(dataset_path, "r") as f:
-        joint_dim = f["data/demo_0/obs"][args.joint_key].shape[-1]
+        joint_dims = [
+            f["data/demo_0/obs"][joint_key].shape[-1]
+            for joint_key in joint_keys
+        ]
+        joint_dim = int(sum(joint_dims))
         for key in obs_keys:
             if key not in f["data/demo_0/obs"]:
                 raise KeyError(f"Missing obs key {key!r} in {dataset_path}")
+        for joint_key in joint_keys:
+            if joint_key not in f["data/demo_0/obs"]:
+                raise KeyError(f"Missing joint key {joint_key!r} in {dataset_path}")
 
     command_scale = expand_scale(parse_float_csv(args.joint_delta_scale), joint_dim)
+    command_scales = []
+    offset = 0
+    for dim in joint_dims:
+        command_scales.append(command_scale[offset:offset + dim])
+        offset += dim
 
     env_meta = copy.deepcopy(FileUtils.get_env_metadata_from_dataset(dataset_path))
     env_meta["env_kwargs"]["controller_configs"] = _make_joint_position_controller_configs(
-        [command_scale]
+        command_scales
     )
-    env_fn = make_env_fn(env_meta, args.joint_key)
+    env_fn = make_env_fn(env_meta, joint_keys)
     env = AsyncVectorEnv([env_fn] * args.n_envs)
 
     demo_names = get_demo_names(dataset_path)
@@ -257,6 +307,8 @@ def main():
         "dataset": dataset_path,
         "obs_keys": obs_keys,
         "joint_key": args.joint_key,
+        "joint_keys": joint_keys,
+        "joint_dims": joint_dims,
         "joint_dim": joint_dim,
         "gripper_action_indices": gripper_action_indices,
         "joint_delta_scale": command_scale.tolist(),
@@ -286,9 +338,10 @@ def main():
                 demo_name=demo_name,
                 demo_idx=demo_idx,
                 obs_keys=obs_keys,
-                joint_key=args.joint_key,
+                joint_keys=joint_keys,
                 gripper_action_indices=gripper_action_indices,
                 command_scale=command_scale,
+                command_scales=command_scales,
                 samples_per_step=args.samples_per_step,
                 n_envs=args.n_envs,
                 rng=rng,
