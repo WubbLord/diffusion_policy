@@ -12,6 +12,7 @@ matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 import numpy as np
 import tqdm
+import math
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -107,6 +108,20 @@ def build_state_features_from_obs(obs, obs_keys):
     )
 
 
+def build_joint_features_from_obs(obs, joint_keys):
+    return np.concatenate(
+        [np.asarray(obs[key], dtype=np.float32).reshape(-1) for key in joint_keys],
+        axis=0,
+    )
+
+
+def build_joint_features_from_group(obs_group, joint_keys, t):
+    return np.concatenate(
+        [np.asarray(obs_group[key][t], dtype=np.float32).reshape(-1) for key in joint_keys],
+        axis=0,
+    )
+
+
 def make_figures(output_dir, arrays, summary):
     output_dir = pathlib.Path(output_dir)
     q_error = arrays["q_error"]
@@ -116,8 +131,15 @@ def make_figures(output_dir, arrays, summary):
     step = arrays["timestep"]
     demo_idx = arrays["demo_idx"]
 
-    fig, axes = plt.subplots(2, 4, figsize=(18, 8), constrained_layout=True)
-    axes = axes.reshape(-1)
+    n_joints = desired_delta.shape[1]
+    ncols = min(4, n_joints)
+    nrows = int(math.ceil(n_joints / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.5 * ncols, 4 * nrows),
+        constrained_layout=True)
+    axes = np.asarray(axes).reshape(-1)
     for j in range(desired_delta.shape[1]):
         ax = axes[j]
         ax.hexbin(desired_delta[:, j], actual_delta[:, j], gridsize=70, bins="log", mincnt=1)
@@ -148,11 +170,11 @@ def make_figures(output_dir, arrays, summary):
     plt.close(fig)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), constrained_layout=True)
-    axes[0].bar(np.arange(7), np.mean(np.abs(actual_delta - desired_delta), axis=0))
+    axes[0].bar(np.arange(n_joints), np.mean(np.abs(actual_delta - desired_delta), axis=0))
     axes[0].set_xlabel("joint")
     axes[0].set_ylabel("mean |actual_delta - desired_delta|")
     axes[0].set_title("Per-step delta tracking error")
-    axes[1].bar(np.arange(7), np.mean(np.abs(q_error), axis=0))
+    axes[1].bar(np.arange(n_joints), np.mean(np.abs(q_error), axis=0))
     axes[1].set_xlabel("joint")
     axes[1].set_ylabel("mean |q replay - q demo|")
     axes[1].set_title("Replay state drift")
@@ -176,6 +198,7 @@ def main():
     parser.add_argument("--mode", choices=["f", "raw"], default="f")
     parser.add_argument("--obs-keys", default=None)
     parser.add_argument("--joint-key", default=None)
+    parser.add_argument("--joint-keys", default=None)
     parser.add_argument("--gripper-action-indices", default=None)
     parser.add_argument("--joint-delta-scale", default=None)
     parser.add_argument("--demo-start", type=int, default=0)
@@ -196,12 +219,25 @@ def main():
             "logged_delta uses demo_q[t+1] - demo_q[t]."
         ),
     )
+    parser.add_argument(
+        "--execution-mode",
+        choices=["one_step", "closed_loop"],
+        default="one_step",
+        help=(
+            "one_step preserves the original oracle replay behavior. "
+            "closed_loop treats desired_delta as a joint target and runs "
+            "--inner-steps residual-correction controller steps."
+        ),
+    )
+    parser.add_argument("--inner-steps", type=int, default=1)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     if args.mode == "f" and args.checkpoint is None:
         raise ValueError("--checkpoint is required when --mode=f")
+    if args.inner_steps < 1:
+        raise ValueError("--inner-steps must be >= 1")
 
     output_dir = pathlib.Path(args.output_dir)
     if output_dir.exists() and any(output_dir.iterdir()) and not args.overwrite:
@@ -230,11 +266,21 @@ def main():
             "robot0_joint_vel",
         ]))
     )
-    joint_key = args.joint_key or checkpoint_meta.get("joint_key", "robot0_joint_pos")
+    if args.joint_keys:
+        joint_keys = parse_csv(args.joint_keys)
+    else:
+        joint_keys = checkpoint_meta.get("joint_keys")
+        if joint_keys is None:
+            joint_keys = [args.joint_key or checkpoint_meta.get("joint_key", "robot0_joint_pos")]
+    joint_key = joint_keys[0]
 
     with h5py.File(dataset_path, "r") as f:
         action_dim = f["data/demo_0/actions"].shape[-1]
-        joint_dim = f["data/demo_0/obs"][joint_key].shape[-1]
+        joint_dims = [
+            f["data/demo_0/obs"][key].shape[-1]
+            for key in joint_keys
+        ]
+        joint_dim = int(sum(joint_dims))
     if args.gripper_action_indices:
         gripper_action_indices = parse_int_csv(args.gripper_action_indices)
     else:
@@ -251,12 +297,18 @@ def main():
             checkpoint_meta.get("joint_delta_scale", [0.25] * joint_dim),
             dtype=np.float32,
         )
+    command_scales = []
+    offset = 0
+    for dim in joint_dims:
+        command_scales.append(command_scale[offset:offset + dim])
+        offset += dim
 
     env_meta = copy.deepcopy(FileUtils.get_env_metadata_from_dataset(dataset_path))
     env_meta["env_kwargs"]["controller_configs"] = _make_joint_position_controller_configs(
-        [command_scale]
+        command_scales
     )
-    replay_obs_keys = sorted(set(obs_keys + [joint_key, "robot0_eef_pos", "object"]))
+    eef_pos_keys = [key for key in obs_keys if key.endswith("_eef_pos")]
+    replay_obs_keys = sorted(set(obs_keys + joint_keys + eef_pos_keys + ["object"]))
     env = create_env(env_meta=env_meta, obs_keys=replay_obs_keys)
 
     demo_names = get_demo_names(dataset_path)
@@ -270,6 +322,8 @@ def main():
         "dataset": dataset_path,
         "obs_keys": obs_keys,
         "joint_key": joint_key,
+        "joint_keys": joint_keys,
+        "joint_dims": joint_dims,
         "joint_delta_scale": command_scale.tolist(),
         "gripper_action_indices": gripper_action_indices,
         "demo_start": args.demo_start,
@@ -277,11 +331,15 @@ def main():
         "max_demos": args.max_demos,
         "state_source": args.state_source,
         "desired_source": args.desired_source,
+        "execution_mode": args.execution_mode,
+        "inner_steps": args.inner_steps,
         "demo_names": demo_names,
         "note": (
             "For state_source=current, f is evaluated on the live replay observation at each step. "
             "For desired_source=current_to_demo_next, desired_delta is demo_q[t+1] - current_replay_q, "
-            "and delta tracking metrics compare that desired_delta to the realized controller delta."
+            "and delta tracking metrics compare that desired_delta to the realized controller delta. "
+            "For execution_mode=closed_loop, desired_delta defines an outer-step q target and f is "
+            "called for residual correction for inner_steps controller steps."
         ),
     }
     save_json(output_dir / "metadata.json", metadata)
@@ -296,8 +354,9 @@ def main():
         "q_error": [],
         "reward": [],
         "success": [],
+        "inner_steps_executed": [],
     }
-    if "robot0_eef_pos" in replay_obs_keys:
+    if eef_pos_keys:
         records["eef_pos_error"] = []
     if "object" in replay_obs_keys:
         records["object_error"] = []
@@ -317,15 +376,24 @@ def main():
                     [build_state_features(obs, obs_keys, t) for t in range(n_steps)],
                     axis=0,
                 ).astype(np.float32)
-                demo_next_q = np.asarray(next_obs[joint_key][:], dtype=np.float32)
-                logged_delta = (
-                    np.asarray(next_obs[joint_key][:], dtype=np.float32)
-                    - np.asarray(obs[joint_key][:], dtype=np.float32)
-                )
-                demo_next_eef = (
-                    np.asarray(next_obs["robot0_eef_pos"][:], dtype=np.float32)
-                    if "robot0_eef_pos" in next_obs else None
-                )
+                demo_next_q = np.stack([
+                    build_joint_features_from_group(next_obs, joint_keys, t)
+                    for t in range(n_steps)
+                ], axis=0).astype(np.float32)
+                demo_obs_q = np.stack([
+                    build_joint_features_from_group(obs, joint_keys, t)
+                    for t in range(n_steps)
+                ], axis=0).astype(np.float32)
+                logged_delta = demo_next_q - demo_obs_q
+                demo_next_eef = None
+                if eef_pos_keys and all(key in next_obs for key in eef_pos_keys):
+                    demo_next_eef = np.stack([
+                        np.concatenate([
+                            np.asarray(next_obs[key][t], dtype=np.float32).reshape(-1)
+                            for key in eef_pos_keys
+                        ], axis=0)
+                        for t in range(n_steps)
+                    ], axis=0).astype(np.float32)
                 demo_next_object = (
                     np.asarray(next_obs["object"][:], dtype=np.float32)
                     if "object" in next_obs else None
@@ -338,7 +406,7 @@ def main():
             eef_errors = []
             object_errors = []
             current_obs = env.get_observation()
-            prev_q = current_obs[joint_key].astype(np.float32).copy()
+            prev_q = build_joint_features_from_obs(current_obs, joint_keys)
 
             for t in range(n_steps):
                 if args.state_source == "current":
@@ -351,36 +419,63 @@ def main():
                 else:
                     desired_delta = logged_delta[t]
 
-                if args.mode == "f":
-                    command = predict_command(
-                        model=model,
-                        normalizer=normalizer,
-                        state=state_feature[None],
-                        desired_delta=desired_delta[None],
-                        command_scale=command_scale,
-                    )[0].astype(np.float32)
-                else:
-                    command = np.clip(desired_delta, -command_scale, command_scale).astype(np.float32)
+                outer_start_q = prev_q.copy()
+                q_target = outer_start_q + desired_delta
+                inner_rewards = []
+                inner_success_flags = []
+                command = None
 
-                env_action = build_controller_action(
-                    command,
-                    actions[t, gripper_action_indices],
-                    command_scale,
-                )
-                current_obs, reward, done, info = env.step(env_action)
-                q_after = current_obs[joint_key].astype(np.float32).copy()
-                actual_delta = q_after - prev_q
+                n_inner = args.inner_steps if args.execution_mode == "closed_loop" else 1
+                for inner_idx in range(n_inner):
+                    if args.execution_mode == "closed_loop":
+                        residual = q_target - prev_q
+                        if args.state_source == "current":
+                            state_feature = build_state_features_from_obs(current_obs, obs_keys)
+                        else:
+                            state_feature = logged_state_features[t]
+                    else:
+                        residual = desired_delta
+
+                    if args.mode == "f":
+                        command = predict_command(
+                            model=model,
+                            normalizer=normalizer,
+                            state=state_feature[None],
+                            desired_delta=residual[None],
+                            command_scale=command_scale,
+                        )[0].astype(np.float32)
+                    else:
+                        command = np.clip(residual, -command_scale, command_scale).astype(np.float32)
+
+                    env_action = build_controller_action(
+                        command,
+                        actions[t, gripper_action_indices],
+                        command_scales,
+                    )
+                    current_obs, reward, done, info = env.step(env_action)
+                    q_after_inner = build_joint_features_from_obs(current_obs, joint_keys)
+                    prev_q = q_after_inner
+                    inner_rewards.append(float(reward))
+                    inner_success_flags.append(success_value(env))
+
+                q_after = build_joint_features_from_obs(current_obs, joint_keys)
+                actual_delta = q_after - outer_start_q
                 prev_q = q_after
 
                 q_error = q_after - demo_next_q[t]
                 q_errors.append(q_error)
-                if demo_next_eef is not None and "robot0_eef_pos" in current_obs:
-                    eef_errors.append(current_obs["robot0_eef_pos"].astype(np.float32) - demo_next_eef[t])
+                if demo_next_eef is not None:
+                    current_eef = np.concatenate([
+                        np.asarray(current_obs[key], dtype=np.float32).reshape(-1)
+                        for key in eef_pos_keys
+                    ], axis=0)
+                    eef_errors.append(current_eef - demo_next_eef[t])
                 if demo_next_object is not None and "object" in current_obs:
                     object_errors.append(current_obs["object"].astype(np.float32) - demo_next_object[t])
 
-                success = success_value(env)
-                rewards.append(float(reward))
+                success = bool(np.any(inner_success_flags))
+                outer_reward = float(np.max(inner_rewards)) if inner_rewards else float(reward)
+                rewards.append(outer_reward)
                 success_flags.append(success)
 
                 records["demo_idx"].append(demo_idx)
@@ -390,8 +485,9 @@ def main():
                 records["command"].append(command)
                 records["actual_delta"].append(actual_delta)
                 records["q_error"].append(q_error)
-                records["reward"].append(float(reward))
+                records["reward"].append(outer_reward)
                 records["success"].append(success)
+                records["inner_steps_executed"].append(n_inner)
                 if "eef_pos_error" in records and eef_errors:
                     records["eef_pos_error"].append(eef_errors[-1])
                 if "object_error" in records and object_errors:
@@ -415,6 +511,8 @@ def main():
     for key, values in records.items():
         if key in {"demo_idx", "timestep"}:
             arrays[key] = np.asarray(values, dtype=np.int32)
+        elif key == "inner_steps_executed":
+            arrays[key] = np.asarray(values, dtype=np.int16)
         elif key == "success":
             arrays[key] = np.asarray(values, dtype=bool)
         else:
@@ -427,6 +525,9 @@ def main():
     summary = {
         "n_demos": len(per_demo),
         "n_steps": int(len(arrays["timestep"])),
+        "n_controller_steps": int(np.sum(arrays["inner_steps_executed"])),
+        "execution_mode": args.execution_mode,
+        "inner_steps": int(args.inner_steps),
         "success_rate": success_rate,
         "mean_max_reward": float(np.mean([row["max_reward"] for row in per_demo])) if per_demo else 0.0,
         "mean_final_q_l2_error": float(np.mean([row["final_q_l2_error"] for row in per_demo])) if per_demo else 0.0,

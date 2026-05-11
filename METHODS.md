@@ -24,6 +24,35 @@ Results:
 
 ## Experiment Entries
 
+## 2026-05-09: Held-Out Adapter Oracle Replay Sweep
+
+Status: completed
+
+Methods:
+- Goal: evaluate whether each trained reverse-controller adapter can replay held-out Robomimic demonstrations by converting desired joint transitions into executable `JOINT_POSITION` commands.
+- Protocol: for each held-out timestep, compute `desired_delta = q_demo[t + 1] - q_current`, evaluate `u = f(current_lowdim_state, desired_delta)`, send `u` plus logged gripper command through the `JOINT_POSITION` controller, and continue the rollout from the resulting live simulator state.
+- Adapters: held-out-demo MLP checkpoints under `data/reverse_controller/*_joint_position_s0.25_n32_heldout_demo/f_mlp_train*/best.pt`.
+- Eval split: PH tasks used demos `150:200`; MH tasks used demos `250:300`; 50 demos per run.
+- Slurm jobs: `816415` through `816422`, all completed with exit code `0`.
+- Output directories: `data/reverse_controller/*_joint_position_s0.25_n32_heldout_demo/oracle_replay_current_state_f_demo*`.
+
+Results:
+
+```text
+dataset       success   delta_MAE   mean_q_L2   final_q_L2   mean_EEF_L2   mean_object_L2
+can_ph        43/50     0.033875    0.135458    0.254945     0.020710      0.310150
+lift_ph       46/50     0.008774    0.029164    0.041462     0.009721      0.051757
+lift_mh       43/50     0.011748    0.031646    0.037723     0.009613      0.080071
+square_ph     29/50     0.036040    0.144787    0.043297     0.017874      0.353788
+square_mh     30/50     0.013600    0.049966    0.036634     0.011382      0.322962
+tool_hang_ph   2/50     0.032994    0.127530    0.066986     0.020648      1.140038
+transport_ph  17/50     0.017372    0.099036    0.052341     0.023958      0.708106
+transport_mh   0/50     0.169473    1.052930    1.880168     0.158153      1.085748
+```
+
+- Command saturation was common: per-step saturation rates were `0.65-0.82` for most single-arm tasks, `0.77` for `transport_ph`, and `0.36` for `transport_mh`.
+- Interpretation: the adapter works well enough for simpler Can/Lift oracle replay, partially works for Square/Transport PH, and fails on Tool Hang and Transport MH. Long-horizon object/contact drift remains the main weakness.
+
 ## 2026-05-08: Joint-Delta DP + Held-Out-Demo Adapter Rollout Eval
 
 Status: completed

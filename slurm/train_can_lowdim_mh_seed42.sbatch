@@ -9,7 +9,6 @@
 #SBATCH --qos=shared-if-available
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --requeue
 
 set -euo pipefail
 
