@@ -197,7 +197,7 @@ def closed_loop_line_graph():
             "mh": [31, 26, 10, 9, 4, 3, 0, 0],
         },
         "Tool Hang": {
-            "ph": [0, 0, np.nan, 0, 0, 0, 0, 0],
+            "ph": [0, 0, 0, 0, 0, 0, 0, 0],
         },
         "Transport": {
             "ph": [0, 2, 0, 0, 0, 0, np.nan, 0],

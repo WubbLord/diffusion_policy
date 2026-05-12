@@ -132,7 +132,7 @@ Results:
 | `square_mh` | `23/50` | `5/6` | `500` | complete |
 | `tool_hang_ph` | `0/50` | `0/6` | `400` | complete |
 | `transport_ph` | `0/50` | `0/6` | `400` | complete |
-| `transport_mh` | `5/50` | `0/6` | `500` | complete |
+| `transport_mh` | `5/50` | `1/6` | `500` | complete |
 
 - Interpretation: the full adapter stack works strongly on Can and Lift, partially on Square, fails on Tool Hang and Transport PH, and gets weak but nonzero Transport MH success despite the working two-arm action interface.
 
@@ -195,7 +195,7 @@ Results:
 | `lift_mh` | `49/50` | `50/50` | `46/50` | `49/50` | `44/50` | `41/50` | `42/50` | `38/50` | `k=2` | complete |
 | `square_ph` | `24/50` | `16/50` | `1/50` | `0/50` | `2/50` | `2/50` | `0/50` | `3/50` | `k=1` | complete |
 | `square_mh` | `31/50` | `26/50` | `10/50` | `9/50` | `4/50` | `3/50` | `0/50` | `0/50` | `k=1` | complete |
-| `tool_hang_ph` | `0/50` | `0/50` | pending | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | all completed k tie | `k=3` running as `828532_3` |
+| `tool_hang_ph` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | all k tie | complete |
 | `transport_ph` | `0/50` | `2/50` | `0/50` | `0/50` | `0/50` | `0/50` | pending | `0/50` | `k=2` | `k=7` running as `828533_7` |
 
 - Interpretation so far: for Can/Lift, more inner-loop steps usually reduce task success even when the adapter can track residuals. The best full-policy rollout result is generally `k=1`, with Lift-MH as the main exception where `k=2` reaches `50/50`.
