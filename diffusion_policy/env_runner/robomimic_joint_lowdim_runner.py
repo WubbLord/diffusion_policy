@@ -82,7 +82,8 @@ def _expand_scale_per_robot(value, joint_dims):
         f"{n_robots} robots and {total_joint_dim} joints.")
 
 
-def _make_joint_position_controller_configs(joint_delta_scales):
+def _make_joint_position_controller_configs(joint_delta_scales,
+        controller_kp=None, controller_damping_ratio=None):
     controller_configs = list()
     for scale in joint_delta_scales:
         if np.any(scale <= 0):
@@ -92,6 +93,13 @@ def _make_joint_position_controller_configs(joint_delta_scales):
         controller_config = copy.deepcopy(controller_config)
         controller_config['output_max'] = scale.tolist()
         controller_config['output_min'] = (-scale).tolist()
+        # Default JOINT_POSITION uses kp=50 which under-tracks 0.05+ rad
+        # deltas in a single 1/20s policy step (settling time >> dt).
+        # Override to a faster gain so demo-rate joint deltas realize.
+        if controller_kp is not None:
+            controller_config['kp'] = controller_kp
+        if controller_damping_ratio is not None:
+            controller_config['damping_ratio'] = controller_damping_ratio
         controller_configs.append(controller_config)
     if len(controller_configs) == 1:
         return controller_configs[0]
@@ -133,6 +141,8 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
             joint_dims=None,
             gripper_dims=None,
             joint_delta_scale=0.05,
+            controller_kp=None,
+            controller_damping_ratio=None,
             joint_action_mode='delta',
             input_action_layout='joints_then_grippers',
             clip_joint_action=True,
@@ -178,7 +188,7 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
             joint_delta_scale, joint_dims=joint_dims)
 
         env_meta['env_kwargs']['controller_configs'] = (
-            _make_joint_position_controller_configs(joint_delta_scales))
+            _make_joint_position_controller_configs(joint_delta_scales, controller_kp=controller_kp, controller_damping_ratio=controller_damping_ratio))
 
         def env_fn():
             robomimic_env = create_env(

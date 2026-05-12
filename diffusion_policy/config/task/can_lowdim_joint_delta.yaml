@@ -39,7 +39,7 @@ env_runner:
   n_robots: 1
   joint_dims: [7]
   gripper_dims: [1]
-  joint_delta_scale: 0.05
+  joint_delta_scale: [0.035, 0.070, 0.045, 0.125, 0.085, 0.135, 0.105]
   joint_action_mode: delta
   input_action_layout: joints_then_grippers
 
@@ -57,6 +57,10 @@ dataset:
   seed: 42
   val_ratio: 0.02
   max_train_episodes: null
+  # Per-key Gaussian noise std injected into obs at __getitem__ (raw scale,
+  # pre-normalization). Use to simulate noisy CV pose estimates instead of GT.
+  # Override at runtime e.g. task.dataset.obs_noise_std={object:0.005}
+  obs_noise_std: null
 
 action_mse_slices:
   - name: joint
@@ -65,7 +69,3 @@ action_mse_slices:
   - name: gripper
     start: 7
     end: 8
-  # Per-key Gaussian noise std injected into obs at __getitem__ (raw scale,
-  # pre-normalization). Use to simulate noisy CV pose estimates instead of GT.
-  # Override at runtime e.g. task.dataset.obs_noise_std={object:0.005}
-  obs_noise_std: null

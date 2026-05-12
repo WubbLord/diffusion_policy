@@ -70,6 +70,20 @@ class TrainDiffusionUnetLowdimWorkspace(BaseWorkspace):
                 print(f"Resuming from checkpoint {lastest_ckpt_path}")
                 self.load_checkpoint(path=lastest_ckpt_path)
 
+        # resume training
+        if cfg.training.get("resume", False):
+            resume_ckpt_path = cfg.training.get("resume_ckpt_path", None)
+            if resume_ckpt_path is not None:
+                resume_ckpt_path = pathlib.Path(resume_ckpt_path).expanduser()
+            else:
+                resume_ckpt_path = self.get_checkpoint_path()
+            if resume_ckpt_path is not None and pathlib.Path(resume_ckpt_path).is_file():
+                print(f"Resuming from checkpoint {resume_ckpt_path}")
+                self.load_checkpoint(path=resume_ckpt_path)
+            elif cfg.training.get("resume_ckpt_path", None) is not None:
+                raise FileNotFoundError(
+                    f"Requested resume checkpoint does not exist: {resume_ckpt_path}")
+
         # configure dataset
         dataset: BaseLowdimDataset
         dataset = hydra.utils.instantiate(cfg.task.dataset)
