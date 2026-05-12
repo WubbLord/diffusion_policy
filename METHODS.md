@@ -24,6 +24,234 @@ Results:
 
 ## Experiment Entries
 
+## 2026-05-11: Full DP+Adapter Rollout Evals Across Robomimic
+
+Status: completed for listed runs
+
+Methods:
+- Goal: evaluate the full deployment stack where a joint-delta Diffusion Policy predicts desired joint transitions, the held-out-demo adapter maps them to executable `JOINT_POSITION` commands, and Robosuite computes task success.
+- Execution stack:
+
+```text
+DP lowdim policy -> desired joint delta + gripper
+adapter f(current full lowdim state, desired joint delta) -> JOINT_POSITION command
+Robosuite JOINT_POSITION controller -> rollout reward / success
+```
+
+- Policy horizon settings: `horizon=16`, `n_obs_steps=2`, `n_action_steps=8`, `num_inference_steps=100`.
+- Eval protocol: `n_test=50` seeded test rollouts, `n_train=6` train-initial-state sanity rollouts, `n_test_vis=4`, `n_train_vis=2`.
+- Test seeds: `100000` through `100049`.
+- Output roots:
+  - Can MH: `data/outputs/2026.05.03/12.20.41_train_diffusion_unet_lowdim_joint_delta_can_lowdim_joint_delta/eval_latest_full50_with_heldout_adapter`.
+  - Sweep tasks: `data/outputs/robomimic_joint_delta_sweep/*/eval_latest_full50_with_heldout_adapter`.
+
+Results:
+
+| Task | Test Success | Train-Init Success | Max Steps | Status |
+| --- | ---: | ---: | ---: | --- |
+| `can_mh` | `50/50` | `6/6` | `500` | complete |
+| `can_ph` | `45/50` | `6/6` | `400` | complete |
+| `lift_ph` | `50/50` | `6/6` | `400` | complete |
+| `lift_mh` | `49/50` | `6/6` | `500` | complete |
+| `square_ph` | `27/50` | `4/6` | `400` | complete |
+| `transport_ph` | `0/50` | `0/6` | `400` | complete |
+
+- Interpretation: the full adapter stack works strongly on Can and Lift, partially on Square PH, and fails on Transport PH despite the now-working two-arm action interface. Tool-Hang and Square-MH full-pipeline coverage is still not recorded here.
+
+## 2026-05-11: Transport Two-Arm Full-Pipeline Eval Smoke
+
+Status: completed
+
+Methods:
+- Goal: verify that the full DP+adapter eval path supports Robomimic Transport, which has two robot arms.
+- Code path changed: `RobomimicJointAdapterLowdimWrapper` now supports multi-robot action parsing and formats controller actions as:
+
+```text
+DP action:         [robot0_dq(7), robot1_dq(7), robot0_gripper, robot1_gripper]
+adapter input:    desired_delta_14d
+adapter output:   command_14d
+robosuite action: [robot0_cmd(7), robot0_gripper, robot1_cmd(7), robot1_gripper]
+```
+
+- Smoke command: Transport PH latest joint-delta DP checkpoint plus held-out-demo Transport PH adapter.
+- Smoke settings: `n_test=1`, `n_train=0`, `n_envs=1`, `max_steps=8`.
+- Slurm job: `818997`, completed in `27s`.
+- Output directory: `data/outputs/robomimic_joint_delta_sweep/transport_ph_seed42_offline_816239/eval_transport_adapter_smoke_patch`.
+
+Results:
+- Smoke eval completed and wrote `eval_log.json`.
+- Confirmed env runner metadata: `n_robots=2`, `joint_dims=[7, 7]`, `gripper_dims=[1, 1]`.
+- Smoke success was `0/1`; this run was only an action-interface and runner-shape check, not a meaningful task-performance eval.
+
+## 2026-05-11: Full Pipeline (DP+Adapter) Closed-Loop K Sweep
+
+Status: partial; all completed k values available at the time of this entry are recorded below
+
+Methods:
+- Goal: evaluate the learned joint-delta DP plus learned adapter when each predicted joint transition is executed as an inner-loop joint-space target.
+- Execution stack:
+
+```text
+DP(obs) -> desired joint delta + gripper
+q_target = q_current + desired joint delta
+for k inner steps:
+    adapter f(current full lowdim state, q_target - q_current) -> JOINT_POSITION command
+    Robosuite JOINT_POSITION controller -> env.step(command)
+next policy observation comes from the live simulator state
+```
+
+- Sweep: `k = 1..8`, one Slurm array task per `k`.
+- Eval protocol: `n_test=50`, `n_train=6`, test seeds `100000` through `100049`, same latest DP checkpoints and held-out-demo adapters as the one-step full-pipeline eval.
+- Output roots: `data/outputs/**/eval_closed_loop_adapter_k1_8`.
+- Original Slurm arrays: `819020` through `819027`.
+- Resubmitted short/preempted indices: `819340` through `819343`, `821132` through `821136`, then `822295` through `822298`.
+
+Results:
+
+| Task | k=1 | k=2 | k=3 | k=4 | k=5 | k=6 | k=7 | k=8 | Best Complete k | Status |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `can_mh` | `50/50` | `40/50` | `12/50` | `9/50` | `11/50` | `6/50` | `5/50` | `10/50` | `k=1` | complete |
+| `can_ph` | `45/50` | `31/50` | `2/50` | `8/50` | `4/50` | `2/50` | `1/50` | `1/50` | `k=1` | complete |
+| `lift_ph` | `50/50` | `47/50` | `31/50` | `32/50` | `6/50` | `5/50` | `9/50` | `14/50` | `k=1` | complete |
+| `lift_mh` | `49/50` | `50/50` | `46/50` | `49/50` | `44/50` | `41/50` | `42/50` | `38/50` | `k=2` | complete |
+| `square_ph` | `24/50` | `16/50` | pending | `0/50` | `2/50` | `2/50` | `0/50` | `3/50` | `k=1` | `k=3` timed out as `822295`; still missing |
+| `square_mh` | `31/50` | `26/50` | pending | `9/50` | `4/50` | `3/50` | `0/50` | `0/50` | `k=1` | `k=3` timed out as `822300`; still missing |
+| `tool_hang_ph` | pending | pending | pending | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `k=4..8` tie | `k=1,k=3` timed out as `821135`; `k=2` timed out as `822297` |
+| `transport_ph` | `0/50` | `2/50` | pending | `0/50` | `0/50` | `0/50` | pending | `0/50` | `k=2` | `k=3,k=7` timed out as `822298` array tasks |
+
+- Interpretation so far: for Can/Lift, more inner-loop steps usually reduce task success even when the adapter can track residuals. The best full-policy rollout result is generally `k=1`, with Lift-MH as the main exception where `k=2` reaches `50/50`.
+
+## 2026-05-11: EEF Baseline And No-Adapter Joint-Delta Rollout Evals
+
+Status: completed
+
+Methods:
+- Goal: compare the original EEF action-interface eval against joint-delta policies executed directly through `JOINT_POSITION` without the learned adapter.
+- Original EEF checkpoint: `data/outputs/2026.05.03/11.28.30_train_diffusion_unet_lowdim_can_lowdim/checkpoints/latest.ckpt`.
+- Joint-delta checkpoint family: `data/outputs/2026.05.03/12.20.41_train_diffusion_unet_lowdim_joint_delta_can_lowdim_joint_delta/checkpoints/*`.
+- Eval protocol: Can MH lowdim, `n_test=50`, `n_train=6`, videos for 4 test and 2 train rollouts.
+
+Results:
+
+| Eval | Checkpoint | Test Success | Train-Init Success | Notes |
+| --- | --- | ---: | ---: | --- |
+| Original EEF DP | latest | `49/50` | `6/6` | Native OSC action interface |
+| Direct joint-delta, no adapter | epoch `0050` | `0/50` | `0/6` | Raw joint deltas sent to `JOINT_POSITION` |
+| Direct joint-delta, no adapter | epoch `0100` | `0/50` | `0/6` | Raw joint deltas sent to `JOINT_POSITION` |
+| Direct joint-delta, no adapter | epoch `0150` | `0/50` | `0/6` | Raw joint deltas sent to `JOINT_POSITION` |
+| Direct joint-delta, no adapter | epoch `0200` | `0/50` | `0/6` | Raw joint deltas sent to `JOINT_POSITION` |
+| Direct joint-delta, no adapter | epoch `0250` | `0/50` | `0/6` | Raw joint deltas sent to `JOINT_POSITION` |
+| Direct joint-delta, no adapter | latest | `0/50` | `0/6` | Raw joint deltas sent to `JOINT_POSITION` |
+
+- Interpretation: the EEF policy succeeds under its native OSC action interface, while the learned joint deltas are not directly executable as `JOINT_POSITION` commands. This is the core action-interface mismatch the adapter addresses.
+
+## 2026-05-09: Held-Out-Demo Adapter Training Across Robomimic
+
+Status: completed
+
+Methods:
+- Goal: train reverse-controller adapters `f(state, desired_delta) -> JOINT_POSITION command` for all available Robomimic lowdim tasks and dataset types.
+- Model: MLP with hidden dims `512,512,512`, SiLU activations, layer norm, trained for `100` epochs.
+- Synthetic data: `32` sampled joint-position command probes per demo timestep, physical command scale `[-0.25, 0.25]` rad per joint.
+- Held-out demo split:
+  - PH tasks: train demos `0:150`, validation demos `150:200`.
+  - MH tasks: train demos `0:250`, validation demos `250:300`.
+- Output roots: `data/reverse_controller/*_joint_position_s0.25_n32_heldout_demo/f_mlp_train*/`.
+
+Results:
+
+| Task | Train Demos | Val Demos | Best Epoch | Best Val Loss | Best Val Command MAE |
+| --- | --- | --- | ---: | ---: | ---: |
+| `can_mh` | `0:250` | `250:300` | `22` | `0.009629` | `0.004868` |
+| `can_ph` | `0:150` | `150:200` | `91` | `0.010516` | `0.005638` |
+| `lift_ph` | `0:150` | `150:200` | `98` | `0.011333` | `0.006093` |
+| `lift_mh` | `0:250` | `250:300` | `8` | `0.030220` | `0.007666` |
+| `square_ph` | `0:150` | `150:200` | `47` | `0.035087` | `0.010626` |
+| `square_mh` | `0:250` | `250:300` | `7` | `0.029318` | `0.009184` |
+| `tool_hang_ph` | `0:150` | `150:200` | `87` | `0.013958` | `0.005779` |
+| `transport_ph` | `0:150` | `150:200` | `28` | `0.020212` | `0.007449` |
+| `transport_mh` | `0:250` | `250:300` | `14` | `0.023476` | `0.007266` |
+
+- Each adapter directory contains `best.pt`, `latest.pt`, `history.json`, and `loss.png`.
+
+## 2026-05-09 to 2026-05-11: Joint-Delta DP Training Sweep
+
+Status: completed
+
+Methods:
+- Goal: train joint-delta Diffusion Policy checkpoints for Robomimic lowdim tasks using the same lowdim UNet pipeline and the joint-delta dataset configs.
+- Config: `train_diffusion_unet_lowdim_joint_delta_workspace`.
+- Main settings: `horizon=16`, `n_obs_steps=2`, `n_action_steps=8`, `num_epochs=5000`, `training.seed=42`, offline W&B logging.
+- Output roots: `data/outputs/robomimic_joint_delta_sweep/*_seed42_offline_*`.
+
+Results:
+
+| Task | Epoch | Val Loss | Status | Output |
+| --- | ---: | ---: | --- | --- |
+| `can_mh` | `4999` | `0.199604` | complete | `data/outputs/2026.05.03/12.20.41_train_diffusion_unet_lowdim_joint_delta_can_lowdim_joint_delta` |
+| `can_ph` | `4999` | `0.186790` | complete | `data/outputs/robomimic_joint_delta_sweep/can_ph_seed42_offline_816233` |
+| `lift_ph` | `4999` | `0.288713` | complete | `data/outputs/robomimic_joint_delta_sweep/lift_ph_seed42_offline_816234` |
+| `lift_mh` | `4999` | `0.104599` | complete | `data/outputs/robomimic_joint_delta_sweep/lift_mh_seed42_offline_816235` |
+| `square_ph` | `4999` | `0.127605` | complete | `data/outputs/robomimic_joint_delta_sweep/square_ph_seed42_offline_816236` |
+| `square_mh` | `4999` | `0.141493` | complete | `data/outputs/robomimic_joint_delta_sweep/square_mh_seed42_offline_816237` |
+| `tool_hang_ph` | `4999` | `0.146761` | complete | `data/outputs/robomimic_joint_delta_sweep/tool_hang_ph_seed42_offline_816238` |
+| `transport_ph` | `4999` | `0.139775` | complete | `data/outputs/robomimic_joint_delta_sweep/transport_ph_seed42_offline_816239` |
+| `transport_mh` | `4999` | `0.110328` | complete | `data/outputs/robomimic_joint_delta_sweep/transport_mh_seed42_offline_816240` |
+
+## 2026-05-11: Joint-Delta DP Training Resumes
+
+Status: completed
+
+Methods:
+- Goal: resume interrupted/offline Robomimic joint-delta DP trainings to the planned final epoch.
+- Training stack: `train_diffusion_unet_lowdim_joint_delta_workspace` with task-specific `*_lowdim_joint_delta` configs, offline W&B logging, latest-checkpoint resume into the same Hydra output directory.
+- Completed resumed jobs:
+  - `square_mh`: Slurm `818332`, output `data/outputs/robomimic_joint_delta_sweep/square_mh_seed42_offline_816237`.
+  - `tool_hang_ph`: Slurm `818784`, output `data/outputs/robomimic_joint_delta_sweep/tool_hang_ph_seed42_offline_816238`.
+  - `transport_ph`: Slurm `818334`, output `data/outputs/robomimic_joint_delta_sweep/transport_ph_seed42_offline_816239`.
+  - `transport_mh`: Slurm `822299`, output `data/outputs/robomimic_joint_delta_sweep/transport_mh_seed42_offline_816240`.
+
+Results:
+
+| Task | Slurm Job | Epoch | Final Train Loss | Val Loss | Status |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `square_mh` | `818332` | `4999` | `8.4559e-05` | `0.141493` | complete |
+| `tool_hang_ph` | `818784` | `4999` | `7.3580e-05` | `0.146761` | complete |
+| `transport_ph` | `818334` | `4999` | `1.2632e-04` | `0.139775` | complete |
+| `transport_mh` | `822299` | `4999` | `1.5764e-04` | `0.110328` | complete |
+
+- `latest.ckpt` exists in each completed run's `checkpoints/` directory.
+- `transport_mh` Slurm `818335` was preempted at epoch `4879`; Slurm `822299` resumed from `latest.ckpt` into the same output directory and completed to epoch `4999`.
+
+## 2026-05-11: Closed-Loop Adapter Oracle Replay Sweep
+
+Status: completed
+
+Methods:
+- Goal: evaluate whether the held-out-demo reverse-controller adapter improves oracle replay when used as an inner-loop joint-space servo.
+- Protocol: for each held-out demo timestep, set `q_target = q_current + Δq_demo[t]`; for `k` inner controller steps, compute `residual = q_target - q_current`, evaluate `u = f(current_lowdim_state, residual)`, and step the `JOINT_POSITION` controller.
+- Sweep: `k = 1..8`, one Slurm array task per `k`.
+- Held-out splits: PH demos `150:200`; MH demos `250:300`; 50 demos per completed task.
+- Output roots: `data/reverse_controller/*_joint_position_s0.25_n32_heldout_demo/oracle_replay_closed_loop_sweep_demo*`.
+- Completed Slurm arrays in this pass: `818431` through `818437`, with retries `818786` and `818787` for the preempted Square entries.
+
+Results:
+
+| Task | Best Success | Best Success k | Best Delta MAE | Best Delta k | Status |
+| --- | ---: | --- | ---: | --- | --- |
+| `can_mh` | `36/50` | `k=1` | `0.010816` | `k=2` | complete |
+| `can_ph` | `43/50` | `k=1` | `0.010770` | `k=8` | complete |
+| `lift_ph` | `45/50` | `k=1` | `0.008754` | `k=1` | complete |
+| `lift_mh` | `45/50` | `k=1,2,3` | `0.009657` | `k=7` | complete |
+| `square_ph` | `40/50` | `k=2,3` | `0.010343` | `k=2` | complete |
+| `square_mh` | `30/50` | `k=1` | `0.009687` | `k=8` | complete |
+| `tool_hang_ph` | `2/50` | `k=1,2` | `0.010847` | `k=2` | complete |
+| `transport_ph` | `23/50` | `k=1` | `0.009599` | `k=7` | complete |
+| `transport_mh` | `6/50` | `k=2` | `0.058283` | `k=7` | complete |
+
+- Interpretation: extra inner-loop steps usually reduce one-step delta tracking error, but they do not reliably improve task success. The best task success is still commonly at `k=1`, suggesting timing/contact drift can outweigh improved joint tracking.
+- `transport_mh`: completed `k=1..8`; best success `6/50` at `k=2`; best delta MAE `0.058283` at `k=7`; `k=8` had success `0/50` and delta MAE `0.063957`.
+
 ## 2026-05-09: Held-Out Adapter Oracle Replay Sweep
 
 Status: completed
@@ -33,27 +261,27 @@ Methods:
 - Protocol: for each held-out timestep, compute `desired_delta = q_demo[t + 1] - q_current`, evaluate `u = f(current_lowdim_state, desired_delta)`, send `u` plus logged gripper command through the `JOINT_POSITION` controller, and continue the rollout from the resulting live simulator state.
 - Adapters: held-out-demo MLP checkpoints under `data/reverse_controller/*_joint_position_s0.25_n32_heldout_demo/f_mlp_train*/best.pt`.
 - Eval split: PH tasks used demos `150:200`; MH tasks used demos `250:300`; 50 demos per run.
-- Slurm jobs: `816415` through `816422`, all completed with exit code `0`.
+- Slurm jobs: `816415` through `816422` plus the Can-MH held-out replay run, all completed with exit code `0`.
 - Output directories: `data/reverse_controller/*_joint_position_s0.25_n32_heldout_demo/oracle_replay_current_state_f_demo*`.
 
 Results:
 
-```text
-dataset       success   delta_MAE   mean_q_L2   final_q_L2   mean_EEF_L2   mean_object_L2
-can_ph        43/50     0.033875    0.135458    0.254945     0.020710      0.310150
-lift_ph       46/50     0.008774    0.029164    0.041462     0.009721      0.051757
-lift_mh       43/50     0.011748    0.031646    0.037723     0.009613      0.080071
-square_ph     29/50     0.036040    0.144787    0.043297     0.017874      0.353788
-square_mh     30/50     0.013600    0.049966    0.036634     0.011382      0.322962
-tool_hang_ph   2/50     0.032994    0.127530    0.066986     0.020648      1.140038
-transport_ph  17/50     0.017372    0.099036    0.052341     0.023958      0.708106
-transport_mh   0/50     0.169473    1.052930    1.880168     0.158153      1.085748
-```
+| Dataset | Success | Delta MAE | Mean q L2 | Final q L2 | Mean EEF L2 | Mean Object L2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `can_mh` | `38/50` | `0.019667` | `0.074342` | `0.058373` | `0.011515` | `0.326052` |
+| `can_ph` | `43/50` | `0.033875` | `0.135458` | `0.254945` | `0.020710` | `0.310150` |
+| `lift_ph` | `46/50` | `0.008774` | `0.029164` | `0.041462` | `0.009721` | `0.051757` |
+| `lift_mh` | `43/50` | `0.011748` | `0.031646` | `0.037723` | `0.009613` | `0.080071` |
+| `square_ph` | `29/50` | `0.036040` | `0.144787` | `0.043297` | `0.017874` | `0.353788` |
+| `square_mh` | `30/50` | `0.013600` | `0.049966` | `0.036634` | `0.011382` | `0.322962` |
+| `tool_hang_ph` | `2/50` | `0.032994` | `0.127530` | `0.066986` | `0.020648` | `1.140038` |
+| `transport_ph` | `17/50` | `0.017372` | `0.099036` | `0.052341` | `0.023958` | `0.708106` |
+| `transport_mh` | `0/50` | `0.169473` | `1.052930` | `1.880168` | `0.158153` | `1.085748` |
 
 - Command saturation was common: per-step saturation rates were `0.65-0.82` for most single-arm tasks, `0.77` for `transport_ph`, and `0.36` for `transport_mh`.
 - Interpretation: the adapter works well enough for simpler Can/Lift oracle replay, partially works for Square/Transport PH, and fails on Tool Hang and Transport MH. Long-horizon object/contact drift remains the main weakness.
 
-## 2026-05-08: Joint-Delta DP + Held-Out-Demo Adapter Rollout Eval
+## 2026-05-08: Full Pipeline (Joint-Delta DP + Held-Out-Demo Adapter) Rollout Eval
 
 Status: completed
 

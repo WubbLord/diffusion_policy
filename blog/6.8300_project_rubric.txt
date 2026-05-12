@@ -1,0 +1,45 @@
+"Novelty
+
+1. The project is innovative/creative /interesting/ tackling a fundamental research question. Examples of this would be: a) exposing a previously unknown connection between two different methods, b) exploring a component of current methods that is not well-understood, c) proposing an improvement to an existing method, d) interpreting or analyzing the learned mechanisms and representations in an existing model.
+
+2. The project is a creative/important application of computer vision techniques that provides novel scientific insights about computer vision/algorithms/other domains. Applying an existing method to a new dataset and reporting results is insufficient. Examples of ways to achieve sufficient novelty: a) exposing fundamental limitations of current methods and experimentally or theoretically analyzing why the method is underperforming, b) exploring how additional structure or knowledge from an application area (i.e. based on geometric priors) can be built into deep learning methods to improve results."	20 pts
+"Technical Soundness and Results
+
+1. The scientific questions are reasonable. 
+2. The method is sound, the math is correct.
+3. The experiments / analyses are well designed to test the scientific questions.
+4. Conclusions are justified by the results.
+5. Quantitative results and baseline comparisons are reported where appropriate.
+6. Quaitatitve results and baseline comparisons are reported where appropriate.
+
+Possible Deductions
+- No baseline comparison even though a clear baseline exists
+- Insufficient empirical analysis and results are presented to support the conclusions / claims "	30 pts
+"Clarity
+
+The project report is well-written and structured, and is made understandable to the reader.
+You formulate a clear set of questions that the project answers.
+The figures are clear and help the reader to understand your analysis.
+The motivation is clear, and there is a discussion of implications and limitations.
+The conclusion is clear based on the experiments in the paper.
+
+Deductions
+- no figures
+- no clear scientific questions or hypotheses"	20 pts
+"Literature Review
+
+Is the proposed project well-motivated by a gap in prior research? Please include citations to prior work/papers to indicate the gap in previous literature that your project addresses."	20 pts
+"Formatting
+
+Content you should include:
+1) An introduction which includes motivation.
+2) Background and related work with literature cited.
+3) A description of your methods with figures showing the method or setup.
+4) An experiments section that has results (in figures) and analysis of the results.
+5) A conclusion/discussion, that mentions implications and limitations.
+
+A good reference for the structure of your report could be formatted like a paper at a major conference such as NeurIPS or CVPR.
+
+Deductions
+- your project proposal is above 3000 words
+- you don't have these sections"	10 pts

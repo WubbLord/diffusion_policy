@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Joint Deltas Are Not Joint Actions</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<main>
+  <header>
+    <div class="kicker">6.8300 Computer Vision Final Project Blog</div>
+    <h1>Joint Deltas Are Not Joint Actions</h1>
+    <p class="subtitle">
+      Diffusion Policy can learn joint-space desired motion from proprioception,
+      but deploying those labels through a different controller exposes an
+      action-interface mismatch. A small inverse-controller adapter can recover
+      strong performance on simple manipulation tasks, while contact-heavy tasks
+      reveal the limits of local joint tracking.
+    </p>
+    <p class="meta">Brian Zhang and Sourish Pramanik &middot; Spring 2026</p>
+  </header>
+
+  <section>
+    <h2>Introduction</h2>
+    <p>
+      Diffusion Policy represents a robot policy as a conditional denoising
+      process over future actions. Its empirical appeal is that it can predict
+      high-dimensional action sequences, model multimodal demonstrations, and
+      execute them in a receding-horizon loop. The original paper evaluates this
+      idea mostly through the action interfaces exposed by each benchmark. In
+      RoboMimic, those actions are operational-space end-effector commands for
+      a robosuite controller, not raw joint commands.
+    </p>
+    <p>
+      This project began with a simple question: if Diffusion Policy is good at
+      modeling high-dimensional trajectories, can we train the same architecture
+      to output joint-space actions? The tempting label is available in every
+      low-dimensional RoboMimic trajectory:
+      <code>dq_demo[t] = q[t+1] - q[t]</code>. That label is a real measured
+      transition of the robot arm. However, it is not necessarily the command
+      that would produce that transition under a joint-position controller.
+    </p>
+    <div class="claim">
+      Main claim: demonstration-derived joint deltas are useful desired
+      transitions, but they are not executable actions unless they are mapped
+      into the controller's command interface.
+    </div>
+    <p>
+      The experiments support this claim. On Can MH, the original end-effector
+      Diffusion Policy reaches <strong>49/50</strong> test successes. A
+      joint-delta Diffusion Policy executed directly through robosuite
+      <code>JOINT_POSITION</code> gets <strong>0/50</strong>. The same
+      joint-delta policy, passed through a learned inverse-controller adapter,
+      reaches <strong>50/50</strong>. The failure is therefore not simply that a
+      diffusion model cannot predict joint-space motion. The failure is that the
+      learned quantity and the deployment action interface are different.
+    </p>
+  </section>
+
+  <section>
+    <h2>Related Work</h2>
+    <p>
+      Diffusion Policy by Chi et al. formulates visuomotor control as denoising
+      over robot action sequences and reports strong performance across
+      simulated and real manipulation benchmarks, including RoboMimic. Two
+      details are especially relevant here: it uses receding-horizon execution,
+      and it explicitly studies action-space choices such as position versus
+      velocity control. My project keeps the same low-dimensional diffusion
+      policy pipeline but changes what the action label means.
+    </p>
+    <p>
+      RoboMimic by Mandlekar et al. provides the demonstration datasets and
+      benchmark tasks used here. It was designed to study imitation learning
+      from offline human demonstrations, including PH proficient-human and MH
+      multi-human datasets. robosuite supplies the simulator and controller
+      abstractions. That separation is central to this project: the dataset
+      logs state transitions under one action interface, while our joint-space
+      policy is evaluated under another.
+    </p>
+    <p>
+      The closest conceptual connection is state-only imitation learning.
+      Radosavovic et al. train an inverse dynamics model to infer actions from
+      demonstrations that contain states but not expert actions. Liu et al.
+      similarly decouple state planning from inverse dynamics in DePO. Those
+      papers ask how to learn when true actions are missing. Here the setting is
+      more specific: RoboMimic does have actions, but they are end-effector OSC
+      commands. If we want joint-position commands, we are effectively in a
+      state-only regime for that action interface.
+    </p>
+    <p>
+      This work is also related to policy representations such as Implicit
+      Behavioral Cloning and Behavior Transformer, which address multimodal
+      continuous actions. My contribution is orthogonal: before comparing
+      policy classes, the label must be a command that the evaluation controller
+      can execute.
+    </p>
+  </section>
+
+  <section>
+    <h2>Methods</h2>
+    <p>
+      We modified the RoboMimic low-dimensional Diffusion Policy pipeline as
+      little as possible. The joint-delta policy uses the same UNet diffusion
+      workspace, horizon <code>16</code>, observation history <code>2</code>,
+      action execution horizon <code>8</code>, and <code>100</code> DDPM
+      inference steps. The observation includes object state, end-effector pose,
+      gripper proprioception, and joint position. The action is the arm joint
+      transition plus the original gripper command.
+    </p>
+    <p>
+      The key addition is an adapter
+      <code>f(state, dq_desired) -&gt; u</code>, where <code>u</code> is a
+      physical joint-position command. The adapter is a three-layer MLP with
+      512 hidden units per layer, SiLU activations, and layer normalization. Its
+      state input is the full low-dimensional simulator state used for adapter
+      training: object, end-effector position and quaternion, gripper qpos,
+      joint position, and joint velocity.
+    </p>
+
+    <div class="figure">
+      <svg class="diagram" viewBox="0 0 980 300" role="img" aria-label="Method schematic">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f5d8c"></path>
+          </marker>
+        </defs>
+        <rect x="20" y="40" width="180" height="70" rx="8" fill="#edf3f8" stroke="#b9c8d6"></rect>
+        <text x="110" y="72" text-anchor="middle" font-size="18" font-weight="700">RoboMimic</text>
+        <text x="110" y="95" text-anchor="middle" font-size="14">states and OSC actions</text>
+        <line x1="200" y1="75" x2="300" y2="75" stroke="#2f5d8c" stroke-width="3" marker-end="url(#arrow)"></line>
+        <rect x="300" y="40" width="190" height="70" rx="8" fill="#fff7e8" stroke="#d4b170"></rect>
+        <text x="395" y="72" text-anchor="middle" font-size="18" font-weight="700">Joint labels</text>
+        <text x="395" y="95" text-anchor="middle" font-size="14">dq = q[t+1] - q[t]</text>
+        <line x1="490" y1="75" x2="590" y2="75" stroke="#2f5d8c" stroke-width="3" marker-end="url(#arrow)"></line>
+        <rect x="590" y="40" width="170" height="70" rx="8" fill="#eef7f1" stroke="#9bc2a8"></rect>
+        <text x="675" y="72" text-anchor="middle" font-size="18" font-weight="700">Diffusion Policy</text>
+        <text x="675" y="95" text-anchor="middle" font-size="14">predicts desired dq</text>
+        <line x1="760" y1="75" x2="840" y2="75" stroke="#2f5d8c" stroke-width="3" marker-end="url(#arrow)"></line>
+        <rect x="840" y="40" width="120" height="70" rx="8" fill="#f7eeee" stroke="#d6b5b5"></rect>
+        <text x="900" y="72" text-anchor="middle" font-size="18" font-weight="700">Naive eval</text>
+        <text x="900" y="95" text-anchor="middle" font-size="14">fails</text>
+
+        <line x1="675" y1="110" x2="675" y2="165" stroke="#2f5d8c" stroke-width="3" marker-end="url(#arrow)"></line>
+        <rect x="560" y="165" width="230" height="70" rx="8" fill="#eef7f1" stroke="#9bc2a8"></rect>
+        <text x="675" y="195" text-anchor="middle" font-size="18" font-weight="700">Adapter f(state, dq)</text>
+        <text x="675" y="218" text-anchor="middle" font-size="14">predicts joint-position command u</text>
+        <line x1="790" y1="200" x2="850" y2="200" stroke="#2f5d8c" stroke-width="3" marker-end="url(#arrow)"></line>
+        <rect x="850" y="165" width="110" height="70" rx="8" fill="#edf3f8" stroke="#b9c8d6"></rect>
+        <text x="905" y="195" text-anchor="middle" font-size="18" font-weight="700">Controller</text>
+        <text x="905" y="218" text-anchor="middle" font-size="14">JOINT_POSITION</text>
+
+        <rect x="20" y="165" width="350" height="70" rx="8" fill="#f5f7f9" stroke="#cbd5df"></rect>
+        <text x="195" y="194" text-anchor="middle" font-size="18" font-weight="700">Synthetic probe data</text>
+        <text x="195" y="217" text-anchor="middle" font-size="14">reset to demo state, sample u, observe actual dq</text>
+        <line x1="370" y1="200" x2="560" y2="200" stroke="#2f5d8c" stroke-width="3" marker-end="url(#arrow)"></line>
+      </svg>
+      <div class="caption">
+        <strong>Figure 1.</strong> The observed joint transition is treated as a
+        desired motion. The adapter learns to convert that desired motion into a
+        command for the deployment controller.
+      </div>
+    </div>
+
+    <p>
+      To train the adapter, we generated synthetic inverse-controller data in
+      simulation. For each demonstration state, the simulator is reset to the
+      logged state. We sample 32 candidate joint-position commands in the physical
+      range <code>[-0.25, 0.25]</code> radians per joint, execute each command
+      once through <code>JOINT_POSITION</code>, and record the actual joint
+      delta that resulted. For Can MH alone this produced 2,008,192 one-step
+      trials over 62,756 demonstration timesteps. Across tasks, adapters are
+      trained on held-out-demo splits: PH uses demos <code>0:150</code> for
+      training and <code>150:200</code> for validation, while MH uses
+      <code>0:250</code> and <code>250:300</code>.
+    </p>
+  </section>
+
+  <section>
+    <h2>Experiments</h2>
+    <h3>1. Is naive joint-space execution the problem?</h3>
+    <p>
+      The first diagnostic compares three Can MH policies under the same 50
+      seeded rollout protocol. The original end-effector policy uses the native
+      OSC action interface. The naive joint-delta policy sends predicted joint
+      deltas directly to <code>JOINT_POSITION</code>. The adapter policy uses
+      the same joint-delta Diffusion Policy but inserts the learned inverse
+      controller before execution.
+    </p>
+
+    <div class="figure">
+      <img src="assets/fig2_can_diagnostic.png" alt="Can MH diagnostic success bar chart">
+      <div class="caption">
+        <strong>Figure 2.</strong> Direct joint-delta execution fails, while the
+        adapter recovers Can performance. The original EEF baseline is included
+        as the clearest available baseline.
+      </div>
+    </div>
+
+    <p>
+      The joint-delta policy was not obviously random. In an offline validation
+      check conditioned on ground-truth teleoperated state, its arm joint-delta
+      MAE was <strong>0.006985 rad</strong> over 1,308 validation timesteps.
+      The mean absolute target delta was <strong>0.009394 rad</strong>. This is
+      not perfect, but it is good enough that a 0/50 rollout result points to
+      the interface mismatch rather than simply an untrained model.
+    </p>
+
+    <h3>2. Can the adapter replay held-out demonstrations?</h3>
+    <p>
+      Before using a learned policy, we tested the adapter with oracle desired
+      deltas from held-out demonstrations. At each step, the desired motion is
+      computed from the demo, but the adapter state is the live simulator state.
+      This tests whether <code>f</code> can keep the robot near the intended
+      joint trajectory after its own small errors accumulate.
+    </p>
+
+    <div class="figure">
+      <table>
+        <thead>
+          <tr>
+            <th>Task</th>
+            <th class="num">Adapter val MAE</th>
+            <th class="num">Oracle replay success</th>
+            <th class="num">Replay delta MAE</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Can MH</td><td class="num">0.004868</td><td class="num">38/50</td><td class="num">0.019667</td></tr>
+          <tr><td>Can PH</td><td class="num">0.005638</td><td class="num">43/50</td><td class="num">0.033875</td></tr>
+          <tr><td>Lift PH</td><td class="num">0.006093</td><td class="num">46/50</td><td class="num">0.008774</td></tr>
+          <tr><td>Lift MH</td><td class="num">0.007666</td><td class="num">43/50</td><td class="num">0.011748</td></tr>
+          <tr><td>Square PH</td><td class="num">0.010626</td><td class="num">29/50</td><td class="num">0.036040</td></tr>
+          <tr><td>Square MH</td><td class="num">0.009184</td><td class="num">30/50</td><td class="num">0.013600</td></tr>
+          <tr><td>Tool Hang PH</td><td class="num">0.005779</td><td class="num">2/50</td><td class="num">0.032994</td></tr>
+          <tr><td>Transport PH</td><td class="num">0.007449</td><td class="num">17/50</td><td class="num">0.017372</td></tr>
+          <tr><td>Transport MH</td><td class="num">0.007266</td><td class="num">0/50</td><td class="num">0.169473</td></tr>
+        </tbody>
+      </table>
+      <div class="caption">
+        <strong>Table 1.</strong> Adapter validation error is small for many
+        datasets, but long-horizon replay can still fail after errors interact
+        with contacts, object drift, and command saturation.
+      </div>
+    </div>
+
+    <div class="figure">
+      <img src="assets/fig4_oracle_replay.png" alt="Oracle replay success and delta MAE across tasks">
+      <div class="caption">
+        <strong>Figure 3.</strong> Held-out oracle replay works best on Can and
+        Lift, partially works on Square and Transport PH, and fails badly on
+        Tool Hang and Transport MH.
+      </div>
+    </div>
+
+    <p>
+      The important lesson is that one-step command prediction error is not the
+      whole story. Tool Hang has a low adapter validation command MAE, yet its
+      oracle replay success is 2/50. The task is high precision and contact
+      sensitive, so small local errors change later object states in ways the
+      demonstration deltas no longer correct.
+    </p>
+
+    <h3>3. Does the full joint-delta policy work beyond Can?</h3>
+    <p>
+      We trained joint-delta Diffusion Policies for the available RoboMimic
+      low-dimensional variants, usually for 5000 epochs. The full pipeline
+      combines the learned policy with the held-out-demo adapter. For context,
+      Figure 4 also includes the original Diffusion Policy paper's reported
+      RoboMimic state-policy results for the closest matching architecture,
+      DiffusionPolicy-C.
+    </p>
+
+    <div class="figure">
+      <img src="assets/fig3_full_pipeline.png" alt="Full pipeline success rates across RoboMimic tasks">
+      <div class="caption">
+        <strong>Figure 4.</strong> The full joint-delta DP plus adapter pipeline
+        reaches near-perfect success on Can and Lift, partial success on Square
+        PH, and 0/50 on Transport PH. The adjacent paper baseline is the
+        original Diffusion Policy state-policy DiffusionPolicy-C max success
+        rate for the same task variant.
+      </div>
+    </div>
+
+    <p>
+      This result gives a more nuanced answer than "joint space works" or
+      "joint space fails." On Can and Lift, desired joint transitions plus an
+      adapter are enough. On Transport, even a two-arm-compatible runner and
+      adapter do not solve the task. That failure is consistent with the oracle
+      replay results: if the adapter cannot replay held-out demonstrations
+      robustly, a learned policy has little chance of succeeding.
+    </p>
+
+    <h3>4. Should the adapter be run as a closed-loop servo?</h3>
+    <p>
+      The final experiment asks whether a desired joint transition should be
+      executed in one shot or iteratively. In closed-loop mode, the runner sets
+      <code>q_target = q_current + dq_desired</code>. For <code>k</code> inner
+      steps, it recomputes the residual <code>q_target - q_current</code>,
+      sends that residual through the adapter, and steps the simulator. Thus,
+      the first inner step uses the full desired delta and later steps try to
+      remove the remaining error.
+    </p>
+
+    <div class="figure">
+      <img src="assets/fig5_closed_loop.png" alt="Closed-loop k sweep success heatmap">
+      <div class="caption">
+        <strong>Figure 5.</strong> Each cell is test successes out of 50. More
+        inner steps often reduce task success even when they may improve local
+        joint tracking. Gray cells were still pending or timed out at the time
+        of writing.
+      </div>
+    </div>
+
+    <p>
+      The closed-loop result is surprising at first: more servo iterations do
+      not generally improve task success. Can MH drops from 50/50 at
+      <code>k=1</code> to 40/50 at <code>k=2</code> and 12/50 at
+      <code>k=3</code>. Lift MH is the main exception, with 50/50 at
+      <code>k=2</code>. The reason is that <code>k</code> is not just extra
+      adapter computation. Each inner step is a real robosuite control step, so
+      closed-loop execution changes the amount of simulated time spent on each
+      policy action. Better local joint tracking can damage contact timing.
+    </p>
+  </section>
+
+  <section>
+    <h2>Discussion</h2>
+    <p>
+      The project exposes a failure mode that is easy to miss in imitation
+      learning. Supervised action labels are only meaningful relative to a
+      controller. If the demonstration action is an OSC end-effector command,
+      and the deployment action is a joint-position command, then the policy
+      cannot be trained by simply replacing the label with a measured state
+      difference and hoping the controller interprets it the same way.
+    </p>
+    <p>
+      The adapter is a practical bridge. It converts state-only desired
+      transitions into executable commands, similar in spirit to inverse
+      dynamics models in state-only imitation learning. It also provides a
+      diagnostic tool: when oracle replay fails, the bottleneck is not the
+      diffusion policy. The desired transition itself is not being converted
+      into a robust action sequence under the controller.
+    </p>
+    <p>
+      There are several limitations. First, all experiments are in simulation,
+      and the adapter assumes access to accurate low-dimensional simulator
+      state. Second, generating inverse-controller data is expensive: Can MH
+      alone used over two million one-step probes. Third, command saturation is
+      common, which suggests that the desired deltas sometimes ask for more than
+      the controller range can produce in one step. Fourth, closed-loop adapter
+      execution changes control timing, so it is not a free improvement over
+      one-step execution. Finally, the hardest tasks involve object contact and
+      multi-arm coordination; local joint tracking is not enough to prevent
+      object drift.
+    </p>
+  </section>
+
+  <section>
+    <h2>Conclusion</h2>
+    <p>
+      The main answer to the original question is yes, but with a condition.
+      Diffusion Policy can learn useful joint-space desired transitions, and on
+      Can and Lift those transitions can drive high-success policies. However,
+      observed joint deltas are not controller commands. The action interface
+      must be modeled explicitly.
+    </p>
+    <p>
+      We think the broader lesson is that action representation is not only a
+      question of dimensionality or policy architecture. It is also a question
+      of semantics. A state transition, an end-effector command, a normalized
+      joint-position command, and a torque are different objects, even when they
+      all move the same robot. For imitation learning systems that reuse offline
+      demonstrations under new controllers, the adapter between these objects
+      can be as important as the policy itself.
+    </p>
+  </section>
+
+  <section>
+    <h2>References</h2>
+    <ol class="refs">
+      <li>
+        Cheng Chi, Siyuan Feng, Yilun Du, Zhenjia Xu, Eric Cousineau,
+        Benjamin Burchfiel, and Shuran Song.
+        <a href="https://arxiv.org/pdf/2303.04137v4">Diffusion Policy:
+        Visuomotor Policy Learning via Action Diffusion</a>, RSS 2023.
+      </li>
+      <li>
+        Ilija Radosavovic, Xiaolong Wang, Lerrel Pinto, and Jitendra Malik.
+        <a href="https://arxiv.org/pdf/2004.04650">State-Only Imitation
+        Learning for Dexterous Manipulation</a>, IROS 2021.
+      </li>
+      <li>
+        Minghuan Liu, Zhengbang Zhu, Yuzheng Zhuang, Weinan Zhang, Jianye Hao,
+        Yong Yu, and Jun Wang.
+        <a href="https://arxiv.org/pdf/2203.02214">Plan Your Target and Learn
+        Your Skills: Transferable State-Only Imitation Learning via Decoupled
+        Policy Optimization</a>, ICML 2022.
+      </li>
+      <li>
+        Ajay Mandlekar, Danfei Xu, Josiah Wong, Soroush Nasiriany, Chen Wang,
+        Rohun Kulkarni, Li Fei-Fei, Silvio Savarese, Yuke Zhu, and Roberto
+        Martin-Martin.
+        <a href="https://arxiv.org/abs/2108.03298">What Matters in Learning
+        from Offline Human Demonstrations for Robot Manipulation</a>, CoRL 2021.
+      </li>
+      <li>
+        Yuke Zhu, Josiah Wong, Ajay Mandlekar, Roberto Martin-Martin, Abhishek
+        Joshi, Kevin Lin, Abhiram Maddukuri, Soroush Nasiriany, and Yifeng Zhu.
+        <a href="https://arxiv.org/abs/2009.12293">robosuite: A Modular
+        Simulation Framework and Benchmark for Robot Learning</a>, 2020.
+      </li>
+      <li>
+        Pete Florence, Corey Lynch, Andy Zeng, Oscar Ramirez, Ayzaan Wahid,
+        Laura Downs, Adrian Wong, Johnny Lee, Igor Mordatch, and Jonathan
+        Tompson.
+        <a href="https://arxiv.org/abs/2109.00137">Implicit Behavioral
+        Cloning</a>, CoRL 2021.
+      </li>
+      <li>
+        Nur Muhammad Mahi Shafiullah, Zichen Jeff Cui, Ariuntuya Altanzaya,
+        and Lerrel Pinto.
+        <a href="https://arxiv.org/abs/2206.11251">Behavior Transformers:
+        Cloning k Modes with One Stone</a>, 2022.
+      </li>
+    </ol>
+  </section>
+</main>
+</body>
+</html>

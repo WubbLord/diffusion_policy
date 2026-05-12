@@ -32,6 +32,11 @@ from diffusion_policy.workspace.base_workspace import BaseWorkspace
 @click.option("--n-envs", type=int, default=None)
 @click.option("--max-steps", type=int, default=None)
 @click.option("--num-inference-steps", type=int, default=None)
+@click.option(
+    "--adapter-execution-mode",
+    type=click.Choice(["one_step", "closed_loop"]),
+    default="one_step")
+@click.option("--adapter-inner-steps", type=int, default=1)
 @click.option("--overwrite", is_flag=True)
 def main(
         checkpoint,
@@ -46,6 +51,8 @@ def main(
         n_envs,
         max_steps,
         num_inference_steps,
+        adapter_execution_mode,
+        adapter_inner_steps,
         overwrite):
     output_dir = pathlib.Path(output_dir)
     if output_dir.exists() and any(output_dir.iterdir()) and not overwrite:
@@ -77,6 +84,8 @@ def main(
             "robot0_joint_vel",
         ])
         cfg.task.env_runner.joint_delta_scale = joint_delta_scale
+        cfg.task.env_runner.adapter_execution_mode = adapter_execution_mode
+        cfg.task.env_runner.adapter_inner_steps = int(adapter_inner_steps)
 
         for key, value in {
             "n_test": n_test,
@@ -116,6 +125,8 @@ def main(
         "adapter_checkpoint": adapter_checkpoint,
         "device": device,
         "adapter_device": adapter_device,
+        "adapter_execution_mode": adapter_execution_mode,
+        "adapter_inner_steps": int(adapter_inner_steps),
         "num_inference_steps": int(policy.num_inference_steps),
         "env_runner": OmegaConf.to_container(cfg.task.env_runner, resolve=True),
         "runner_log": {},
