@@ -24,6 +24,80 @@ Results:
 
 ## Experiment Entries
 
+## 2026-05-12: Sourish OSC Adapter Study From `origin/sour/obs-noise-param`
+
+Status: completed for summarized runs; some branch jobs were still running or queued in the source writeup
+
+Methods:
+- Source read: `origin/sour/obs-noise-param:writeup.md` after `git fetch origin`.
+- Goal: compare ways to execute joint-delta Diffusion Policy checkpoints through the standard Robomimic `OSC_POSE` controller rather than the `JOINT_POSITION` controller used by the main adapter experiments.
+- Policies: joint-delta lowdim Diffusion Policy checkpoints trained for PH variants of Lift, Can, Square, Tool Hang, and Transport.
+- Deterministic adapter: `robomimic_joint_fk_to_eef_runner.py`.
+  - Integrate predicted `Δq` onto the current joint state.
+  - Run Franka Panda forward kinematics in a standalone MuJoCo model.
+  - Convert the target end-effector pose into normalized `OSC_POSE` action space.
+  - Execute through the native Robomimic OSC controller.
+- Learned OSC adapters:
+  - Probe-based NN-to-OSC: Brian-style `InverseControllerMLP`, input `state ⊕ desired_Δq`, target OSC command, synthetic probes collected by stepping random/anchored OSC commands and measuring actual `Δq`.
+  - Demo-supervised NN-to-OSC: one pair per demo timestep, `(state_t, q[t+1]-q[t]) -> a_OSC[t]`, where `a_OSC[t]` is the recorded teleoperation command. No simulator probing.
+- Eval protocol in the writeup: `n_test=50`, `test_start_seed=100000`, `n_envs=28`; `max_steps=400` for Lift/Can/Square and `700` for Tool Hang/Transport.
+
+Results:
+
+DP training status in Sourish's branch:
+
+| Task | Job ID | Status | Wall Time |
+| --- | ---: | --- | --- |
+| `lift_ph` | `818751` | completed, 5000 epochs | `6h23m` |
+| `can_ph` | `818753` | completed, 5000 epochs | `9h59m` |
+| `square_ph` | `818755` | completed, 5000 epochs | `10h34m` |
+| `tool_hang_ph` | `818757` | running at writeup time, about 4100/5000 epochs | `17h+` |
+| `transport_ph` | `821174` | resumed/running at writeup time, about 3900/5000 epochs | `19h+` |
+
+FK-to-OSC full-pipeline evals:
+
+| Task | OSC `kp` | Test Success | Notes |
+| --- | ---: | ---: | --- |
+| `lift_ph` | `1000` | `0.94` | strong deterministic adapter result |
+| `can_ph` | `1000` | `0.88` | strong deterministic adapter result |
+| `square_ph` | `1000` | `0.34` | lower due to controller tracking / task precision |
+| `square_ph` | `3000` | `0.50` | higher OSC gain recovered `+0.16` success |
+| `tool_hang_ph` | TBD | TBD | DP still training in source writeup |
+| `transport_ph` | TBD | TBD | DP/action-layout calibration still WIP in source writeup |
+
+Probe-based NN-to-OSC adapter results:
+
+| Task | Quick Probe Full Pipeline | Brian-Quality Probe Full Pipeline | Quick Probe Oracle Replay |
+| --- | ---: | ---: | ---: |
+| `lift_ph` | `0.00` | `0.02` | `0.48` |
+| `can_ph` | `0.02` | queued | `0.24` |
+| `square_ph` | `0.00` | queued | `0.00` |
+| `tool_hang_ph` | `0.00` | queued | queued |
+| `transport_ph` | queued | queued | queued |
+
+Demo-supervised NN-to-OSC full-pipeline evals:
+
+| Task | Probe NN-to-OSC | Demo-Supervised NN-to-OSC | FK-to-OSC Reference |
+| --- | ---: | ---: | ---: |
+| `lift_ph` | `0.00` quick / `0.02` Brian-quality | `0.90` | `0.94` |
+| `can_ph` | `0.02` quick | `0.64` | `0.88` |
+| `square_ph` | `0.00` quick | `0.48` | `0.50` at `kp=3000` |
+
+Action execution horizon / replanning sweep under FK-to-OSC:
+
+| Task | `n_action_steps=8` | `n_action_steps=1` | Notes |
+| --- | ---: | ---: | --- |
+| `lift_ph` | `0.94` | `0.94` | saturated; replanning more often did not change success |
+| `can_ph` | `0.88` | `0.88` | saturated; replanning more often did not change success |
+| `square_ph` | `0.34` at `kp=1000` | running in job `827030` | sweep still incomplete in source writeup |
+
+Interpretation:
+- For the native Robomimic OSC action interface, deterministic FK-to-OSC is the cleanest adapter: it converts a predicted joint target into the controller's own end-effector target rather than trying to learn a global inverse from arbitrary desired joint deltas to OSC commands.
+- Probe-based NN-to-OSC fails even with larger Brian-quality sampling. The writeup argues this is structural: `OSC_POSE -> Δq` is many-to-one and state/Jacobian/nullspace dependent, so the inverse is branch-ambiguous off the demonstration manifold.
+- Demo-supervised NN-to-OSC works much better because it learns the teleoperator's chosen OSC command branch on the demo manifold. It nearly matches FK-to-OSC on Lift and Square, but remains below FK-to-OSC on Can.
+- OSC gain matters: increasing `kp` from `1000` to `3000` improved Square FK-to-OSC from `0.34` to `0.50`.
+- A closed-loop FK variant on Square at `kp=1000` reportedly stayed at `0.34`, suggesting stale FK targets inside the action chunk were not the dominant bottleneck for that setting.
+
 ## 2026-05-11: Full DP+Adapter Rollout Evals Across Robomimic
 
 Status: completed for listed runs

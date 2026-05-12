@@ -1,11 +1,21 @@
 import os
+import base64
+import re
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 
+BLOG_DIR = os.path.dirname(__file__)
 OUT_DIR = os.path.join(os.path.dirname(__file__), "assets")
 os.makedirs(OUT_DIR, exist_ok=True)
+INLINE_IMAGE_NAMES = [
+    "fig2_can_diagnostic.png",
+    "fig3_full_pipeline.png",
+    "fig4_oracle_replay.png",
+    "fig5_closed_loop.png",
+]
 
 plt.rcParams.update({
     "font.family": "DejaVu Sans",
@@ -28,6 +38,58 @@ def save(fig, name):
     plt.close(fig)
 
 
+def inline_assets():
+    html_path = os.path.join(BLOG_DIR, "index.html")
+    css_path = os.path.join(OUT_DIR, "style.css")
+
+    with open(html_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    with open(css_path, "r", encoding="utf-8") as f:
+        css = f.read().strip()
+
+    style_block = (
+        '  <style data-inline-name="style.css">\n'
+        f"{css}\n"
+        "  </style>"
+    )
+    html = re.sub(
+        r'  <link rel="stylesheet" href="assets/style\.css">\n?',
+        style_block + "\n",
+        html,
+    )
+    html = re.sub(
+        r'  <style data-inline-name="style\.css">.*?  </style>',
+        style_block,
+        html,
+        flags=re.DOTALL,
+    )
+
+    for name in INLINE_IMAGE_NAMES:
+        image_path = os.path.join(OUT_DIR, name)
+        with open(image_path, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode("ascii")
+        data_url = f"data:image/png;base64,{encoded}"
+
+        html = html.replace(
+            f'<img src="assets/{name}"',
+            f'<img src="{data_url}" data-inline-name="{name}"',
+        )
+        html = re.sub(
+            rf'<img src="data:image/png;base64,[^"]+" data-inline-name="{re.escape(name)}"',
+            f'<img src="{data_url}" data-inline-name="{name}"',
+            html,
+        )
+
+    html = re.sub(
+        r'alt="Closed-loop k sweep success [^"]+"',
+        'alt="Closed-loop k sweep success line graph"',
+        html,
+    )
+
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+
 def diagnostic_bar():
     labels = ["EEF DP\n(OSC)", "Joint-delta DP\n(no adapter)", "Joint-delta DP\n+ adapter\n(ours)"]
     values = [49 / 50, 0.0, 50 / 50]
@@ -36,7 +98,6 @@ def diagnostic_bar():
     bars = ax.bar(labels, values, color=colors, width=0.62)
     ax.set_ylim(0, 1.08)
     ax.set_ylabel("Can MH test success rate")
-    ax.set_title("The failure is the action interface, not only the policy")
     ax.grid(axis="x", visible=False)
     for bar, text in zip(bars, ["49/50", "0/50", "50/50"]):
         y = max(bar.get_height(), 0.02)
@@ -52,12 +113,12 @@ def diagnostic_bar():
 
 
 def full_pipeline_bar():
-    tasks = ["Can\nMH", "Can\nPH", "Lift\nPH", "Lift\nMH", "Square\nPH", "Transport\nPH"]
-    ours = np.array([50 / 50, 45 / 50, 50 / 50, 49 / 50, 27 / 50, 0 / 50])
+    tasks = ["Can\nPH", "Can\nMH", "Lift\nPH", "Lift\nMH", "Square\nPH", "Transport\nPH"]
+    ours = np.array([45 / 50, 50 / 50, 50 / 50, 49 / 50, 27 / 50, 0 / 50])
     # Diffusion Policy paper Table I, state policy, DiffusionPolicy-C row.
     # Values are the reported max success rates from max / average-last-10.
     paper_dp = np.array([1.00, 1.00, 1.00, 1.00, 1.00, 0.94])
-    counts = ["50/50", "45/50", "50/50", "49/50", "27/50", "0/50"]
+    counts = ["45/50", "50/50", "50/50", "49/50", "27/50", "0/50"]
     x = np.arange(len(tasks))
     width = 0.34
     fig, ax = plt.subplots(figsize=(8.2, 4.2))
@@ -69,7 +130,6 @@ def full_pipeline_bar():
         label="DP paper, state policy")
     ax.set_ylim(0, 1.08)
     ax.set_ylabel("Test success rate")
-    ax.set_title("Full joint-delta pipeline versus original DP paper")
     ax.set_xticks(x)
     ax.set_xticklabels(tasks)
     ax.grid(axis="x", visible=False)
@@ -85,10 +145,10 @@ def full_pipeline_bar():
 
 
 def oracle_replay():
-    tasks = ["Can\nMH", "Can\nPH", "Lift\nPH", "Lift\nMH", "Square\nPH",
+    tasks = ["Can\nPH", "Can\nMH", "Lift\nPH", "Lift\nMH", "Square\nPH",
              "Square\nMH", "Tool\nHang", "Transport\nPH", "Transport\nMH"]
-    success = np.array([38, 43, 46, 43, 29, 30, 2, 17, 0]) / 50
-    delta_mae = np.array([0.019667, 0.033875, 0.008774, 0.011748, 0.036040,
+    success = np.array([43, 38, 46, 43, 29, 30, 2, 17, 0]) / 50
+    delta_mae = np.array([0.033875, 0.019667, 0.008774, 0.011748, 0.036040,
                           0.013600, 0.032994, 0.017372, 0.169473])
     x = np.arange(len(tasks))
     fig, ax1 = plt.subplots(figsize=(8.6, 3.9))
@@ -102,7 +162,6 @@ def oracle_replay():
     ax2.plot(x, delta_mae, color="#b75d69", marker="o", linewidth=2.2, label="Delta MAE")
     ax2.set_ylim(0, 0.18)
     ax2.set_ylabel("Mean |actual delta - desired delta|")
-    ax1.set_title("Adapter replay quality on held-out demonstrations")
     handles = [ax1.patches[0], ax2.lines[0]]
     ax1.legend(
         handles,
@@ -115,45 +174,92 @@ def oracle_replay():
     save(fig, "fig4_oracle_replay.png")
 
 
-def closed_loop_heatmap():
-    tasks = ["Can MH", "Can PH", "Lift PH", "Lift MH", "Square PH", "Square MH", "ToolHang PH", "Transport PH"]
-    data = np.array([
-        [50, 40, 12, 9, 11, 6, 5, 10],
-        [45, 31, 2, 8, 4, 2, 1, 1],
-        [50, 47, 31, 32, 6, 5, 9, 14],
-        [49, 50, 46, 49, 44, 41, 42, 38],
-        [24, 16, np.nan, 0, 2, 2, 0, 3],
-        [31, 26, np.nan, 9, 4, 3, 0, 0],
-        [np.nan, np.nan, np.nan, 0, 0, 0, 0, 0],
-        [0, 2, np.nan, 0, 0, 0, np.nan, 0],
-    ], dtype=float) / 50.0
-    masked = np.ma.masked_invalid(data)
-    fig, ax = plt.subplots(figsize=(8.6, 4.5))
-    cmap = plt.get_cmap("YlGn").copy()
-    cmap.set_bad("#e9e9e9")
-    im = ax.imshow(masked, aspect="auto", cmap=cmap, vmin=0, vmax=1)
-    ax.set_xticks(np.arange(8))
-    ax.set_xticklabels([str(i) for i in range(1, 9)])
-    ax.set_yticks(np.arange(len(tasks)))
-    ax.set_yticklabels(tasks)
+def closed_loop_line_graph():
+    k = np.arange(1, 9)
+    task_colors = {
+        "Can": "#33658a",
+        "Lift": "#2f855a",
+        "Square": "#b75d69",
+        "Tool Hang": "#8b5a2b",
+        "Transport": "#6b5fb5",
+    }
+    series = {
+        "Can": {
+            "ph": [45, 31, 2, 8, 4, 2, 1, 1],
+            "mh": [50, 40, 12, 9, 11, 6, 5, 10],
+        },
+        "Lift": {
+            "ph": [50, 47, 31, 32, 6, 5, 9, 14],
+            "mh": [49, 50, 46, 49, 44, 41, 42, 38],
+        },
+        "Square": {
+            "ph": [24, 16, np.nan, 0, 2, 2, 0, 3],
+            "mh": [31, 26, np.nan, 9, 4, 3, 0, 0],
+        },
+        "Tool Hang": {
+            "ph": [np.nan, np.nan, np.nan, 0, 0, 0, 0, 0],
+        },
+        "Transport": {
+            "ph": [0, 2, np.nan, 0, 0, 0, np.nan, 0],
+        },
+    }
+    style_by_dataset = {
+        "ph": ":",
+        "mh": "-",
+    }
+
+    fig, ax = plt.subplots(figsize=(8.8, 4.8))
+    for task, task_series in series.items():
+        for dataset_type, counts in task_series.items():
+            rates = np.array(counts, dtype=float) / 50.0
+            if np.all(np.isnan(rates)):
+                continue
+            ax.plot(
+                k,
+                rates,
+                color=task_colors[task],
+                linestyle=style_by_dataset[dataset_type],
+                linewidth=2.4,
+                marker="o",
+                markersize=4.5,
+                label=f"{task} {dataset_type.upper()}",
+            )
+
+    ax.set_xlim(0.8, 8.2)
+    ax.set_ylim(-0.03, 1.05)
+    ax.set_xticks(k)
+    ax.set_yticks(np.linspace(0, 1, 5))
     ax.set_xlabel("Closed-loop inner steps k")
-    ax.set_title("Closed-loop execution often hurts task success")
-    ax.grid(False)
-    ax.set_xticks(np.arange(-.5, 8, 1), minor=True)
-    ax.set_yticks(np.arange(-.5, len(tasks), 1), minor=True)
-    ax.grid(which="minor", color="white", linestyle="-", linewidth=1.5)
-    ax.tick_params(which="minor", bottom=False, left=False)
-    for i in range(data.shape[0]):
-        for j in range(data.shape[1]):
-            if np.isnan(data[i, j]):
-                label = "pending"
-                color = "#555555"
-            else:
-                label = f"{int(round(data[i, j] * 50))}"
-                color = "black" if data[i, j] < 0.65 else "white"
-            ax.text(j, i, label, ha="center", va="center", color=color, fontsize=8)
-    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
-    cbar.set_label("Success rate")
+    ax.set_ylabel("Test success rate")
+    ax.grid(axis="x", visible=False)
+
+    task_handles = [
+        Line2D([0], [0], color=color, linewidth=3, label=task)
+        for task, color in task_colors.items()
+    ]
+    style_handles = [
+        Line2D([0], [0], color="#333333", linestyle=":", linewidth=2.4, label="PH"),
+        Line2D([0], [0], color="#333333", linestyle="-", linewidth=2.4, label="MH"),
+    ]
+    task_legend = ax.legend(
+        handles=task_handles,
+        frameon=True,
+        facecolor="white",
+        edgecolor="#cbd5df",
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=5,
+    )
+    ax.add_artist(task_legend)
+    ax.legend(
+        handles=style_handles,
+        frameon=True,
+        facecolor="white",
+        edgecolor="#cbd5df",
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.34),
+        ncol=2,
+    )
     save(fig, "fig5_closed_loop.png")
 
 
@@ -161,4 +267,5 @@ if __name__ == "__main__":
     diagnostic_bar()
     full_pipeline_bar()
     oracle_replay()
-    closed_loop_heatmap()
+    closed_loop_line_graph()
+    inline_assets()
