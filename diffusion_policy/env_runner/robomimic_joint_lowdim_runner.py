@@ -1,5 +1,7 @@
 import copy
+import json
 import os
+import time
 import wandb
 import numpy as np
 import torch
@@ -602,9 +604,40 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
         n_envs = len(self.env_fns)
         n_inits = len(self.env_init_fn_dills)
         n_chunks = math.ceil(n_inits / n_envs)
+        env_name = self.env_meta['env_name']
+        progress_path = pathlib.Path(self.output_dir).joinpath("eval_progress.jsonl")
+
+        def log_progress(event, **kwargs):
+            record = {
+                "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "event": event,
+                "env_name": env_name,
+                **kwargs,
+            }
+            message_items = [
+                f"{key}={value}" for key, value in record.items()
+                if key != "time"
+            ]
+            print("[eval_progress] " + " ".join(message_items), flush=True)
+            try:
+                with open(progress_path, "a") as f:
+                    f.write(json.dumps(record, sort_keys=True) + "\n")
+            except Exception as exc:
+                print(
+                    f"[eval_progress] failed_to_write path={progress_path} error={exc}",
+                    flush=True)
 
         all_video_paths = [None] * n_inits
         all_rewards = [None] * n_inits
+        log_progress(
+            "run_start",
+            n_envs=int(n_envs),
+            n_inits=int(n_inits),
+            n_chunks=int(n_chunks),
+            max_steps=int(self.max_steps),
+            n_action_steps=int(self.n_action_steps),
+            adapter_execution_mode=str(self.adapter_execution_mode),
+            adapter_inner_steps=int(self.adapter_inner_steps))
 
         for chunk_idx in range(n_chunks):
             start = chunk_idx * n_envs
@@ -619,14 +652,29 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
                 this_init_fns.extend([self.env_init_fn_dills[0]] * n_diff)
             assert len(this_init_fns) == n_envs
 
+            chunk_start_time = time.monotonic()
+            log_progress(
+                "chunk_start",
+                chunk=int(chunk_idx + 1),
+                n_chunks=int(n_chunks),
+                init_start=int(start),
+                init_end=int(end),
+                active_envs=int(this_n_active_envs))
             env.call_each('run_dill_function',
                 args_list=[(x,) for x in this_init_fns])
 
+            log_progress(
+                "chunk_reset_start",
+                chunk=int(chunk_idx + 1),
+                n_chunks=int(n_chunks))
             obs = env.reset()
+            log_progress(
+                "chunk_reset_done",
+                chunk=int(chunk_idx + 1),
+                n_chunks=int(n_chunks))
             past_action = None
             policy.reset()
 
-            env_name = self.env_meta['env_name']
             pbar = tqdm.tqdm(
                 total=self.max_steps,
                 desc=f"Eval {env_name}JointLowdim {chunk_idx + 1}/{n_chunks}",
@@ -634,6 +682,9 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
                 mininterval=self.tqdm_interval_sec)
 
             done = False
+            last_log_step = 0
+            last_log_time = time.monotonic()
+            log_every_steps = max(1, 5 * self.n_action_steps)
             while not done:
                 np_obs_dict = {
                     'obs': obs[:, :self.n_obs_steps].astype(np.float32)
@@ -657,16 +708,46 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
                     raise RuntimeError("Nan or Inf action")
 
                 env_action = self.transform_action(action)
-                obs, reward, done, info = env.step(env_action)
-                done = np.all(done)
+                obs, reward, done_vec, info = env.step(env_action)
+                done_arr = np.asarray(done_vec).reshape(-1)
+                done = bool(np.all(done_arr))
                 past_action = action
 
                 pbar.update(action.shape[1])
+                now = time.monotonic()
+                if (
+                        done
+                        or (pbar.n - last_log_step) >= log_every_steps
+                        or (now - last_log_time) >= 60.0):
+                    reward_arr = np.asarray(reward).reshape(-1)
+                    reward_arr = reward_arr[:this_n_active_envs]
+                    log_progress(
+                        "chunk_step",
+                        chunk=int(chunk_idx + 1),
+                        n_chunks=int(n_chunks),
+                        step=int(min(pbar.n, self.max_steps)),
+                        max_steps=int(self.max_steps),
+                        active_envs=int(this_n_active_envs),
+                        done_envs=int(np.sum(done_arr[:this_n_active_envs])),
+                        reward_mean=float(np.mean(reward_arr)) if reward_arr.size else None,
+                        elapsed_sec=float(now - chunk_start_time))
+                    last_log_step = pbar.n
+                    last_log_time = now
             pbar.close()
 
+            log_progress(
+                "chunk_render_start",
+                chunk=int(chunk_idx + 1),
+                n_chunks=int(n_chunks),
+                elapsed_sec=float(time.monotonic() - chunk_start_time))
             all_video_paths[this_global_slice] = env.render()[this_local_slice]
             all_rewards[this_global_slice] = env.call(
                 'get_attr', 'reward')[this_local_slice]
+            log_progress(
+                "chunk_done",
+                chunk=int(chunk_idx + 1),
+                n_chunks=int(n_chunks),
+                elapsed_sec=float(time.monotonic() - chunk_start_time))
 
         max_rewards = collections.defaultdict(list)
         log_data = dict()
@@ -687,6 +768,7 @@ class RobomimicJointLowdimRunner(BaseLowdimRunner):
             value = np.mean(value)
             log_data[name] = value
 
+        log_progress("run_done", n_logged_metrics=int(len(log_data)))
         return log_data
 
     def transform_action(self, action):

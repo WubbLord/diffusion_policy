@@ -118,19 +118,23 @@ Robosuite JOINT_POSITION controller -> rollout reward / success
 - Output roots:
   - Can MH: `data/outputs/2026.05.03/12.20.41_train_diffusion_unet_lowdim_joint_delta_can_lowdim_joint_delta/eval_latest_full50_with_heldout_adapter`.
   - Sweep tasks: `data/outputs/robomimic_joint_delta_sweep/*/eval_latest_full50_with_heldout_adapter`.
+- Final missing-task resubmits: `828492` Square MH, `828493` Tool Hang PH, `828494` Transport MH, all with `n_envs=4` and explicit progress logging.
 
 Results:
 
 | Task | Test Success | Train-Init Success | Max Steps | Status |
 | --- | ---: | ---: | ---: | --- |
-| `can_mh` | `50/50` | `6/6` | `500` | complete |
 | `can_ph` | `45/50` | `6/6` | `400` | complete |
+| `can_mh` | `50/50` | `6/6` | `500` | complete |
 | `lift_ph` | `50/50` | `6/6` | `400` | complete |
 | `lift_mh` | `49/50` | `6/6` | `500` | complete |
 | `square_ph` | `27/50` | `4/6` | `400` | complete |
+| `square_mh` | `23/50` | `5/6` | `500` | complete |
+| `tool_hang_ph` | `0/50` | `0/6` | `400` | complete |
 | `transport_ph` | `0/50` | `0/6` | `400` | complete |
+| `transport_mh` | `5/50` | `0/6` | `500` | complete |
 
-- Interpretation: the full adapter stack works strongly on Can and Lift, partially on Square PH, and fails on Transport PH despite the now-working two-arm action interface. Tool-Hang and Square-MH full-pipeline coverage is still not recorded here.
+- Interpretation: the full adapter stack works strongly on Can and Lift, partially on Square, fails on Tool Hang and Transport PH, and gets weak but nonzero Transport MH success despite the working two-arm action interface.
 
 ## 2026-05-11: Transport Two-Arm Full-Pipeline Eval Smoke
 
@@ -179,6 +183,7 @@ next policy observation comes from the live simulator state
 - Output roots: `data/outputs/**/eval_closed_loop_adapter_k1_8`.
 - Original Slurm arrays: `819020` through `819027`.
 - Resubmitted short/preempted indices: `819340` through `819343`, `821132` through `821136`, then `822295` through `822298`.
+- Final reliability resubmits with `n_envs=4` and explicit progress logging: `828530` Square PH k3, `828531` Square MH k3, `828532` Tool Hang PH k1-k3, and `828533` Transport PH k3/k7.
 
 Results:
 
@@ -188,10 +193,10 @@ Results:
 | `can_ph` | `45/50` | `31/50` | `2/50` | `8/50` | `4/50` | `2/50` | `1/50` | `1/50` | `k=1` | complete |
 | `lift_ph` | `50/50` | `47/50` | `31/50` | `32/50` | `6/50` | `5/50` | `9/50` | `14/50` | `k=1` | complete |
 | `lift_mh` | `49/50` | `50/50` | `46/50` | `49/50` | `44/50` | `41/50` | `42/50` | `38/50` | `k=2` | complete |
-| `square_ph` | `24/50` | `16/50` | pending | `0/50` | `2/50` | `2/50` | `0/50` | `3/50` | `k=1` | `k=3` timed out as `822295`; still missing |
-| `square_mh` | `31/50` | `26/50` | pending | `9/50` | `4/50` | `3/50` | `0/50` | `0/50` | `k=1` | `k=3` timed out as `822300`; still missing |
-| `tool_hang_ph` | pending | pending | pending | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `k=4..8` tie | `k=1,k=3` timed out as `821135`; `k=2` timed out as `822297` |
-| `transport_ph` | `0/50` | `2/50` | pending | `0/50` | `0/50` | `0/50` | pending | `0/50` | `k=2` | `k=3,k=7` timed out as `822298` array tasks |
+| `square_ph` | `24/50` | `16/50` | `1/50` | `0/50` | `2/50` | `2/50` | `0/50` | `3/50` | `k=1` | complete |
+| `square_mh` | `31/50` | `26/50` | `10/50` | `9/50` | `4/50` | `3/50` | `0/50` | `0/50` | `k=1` | complete |
+| `tool_hang_ph` | `0/50` | `0/50` | pending | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | all completed k tie | `k=3` running as `828532_3` |
+| `transport_ph` | `0/50` | `2/50` | `0/50` | `0/50` | `0/50` | `0/50` | pending | `0/50` | `k=2` | `k=7` running as `828533_7` |
 
 - Interpretation so far: for Can/Lift, more inner-loop steps usually reduce task success even when the adapter can track residuals. The best full-policy rollout result is generally `k=1`, with Lift-MH as the main exception where `k=2` reaches `50/50`.
 

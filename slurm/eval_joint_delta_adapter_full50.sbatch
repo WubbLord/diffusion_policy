@@ -23,6 +23,11 @@ mkdir -p slurm/logs
 
 source /data/scratch/zhangbr/miniforge3/etc/profile.d/conda.sh
 conda activate /data/scratch/zhangbr/.conda/envs/robodiff
+export PYTHONUNBUFFERED=1
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
 
 DP_CHECKPOINT="$1"
 ADAPTER_CHECKPOINT="$2"
@@ -53,6 +58,7 @@ echo "adapter_checkpoint=${ADAPTER_CHECKPOINT}"
 echo "output_dir=${OUTPUT_DIR}"
 echo "n_test=${N_TEST}"
 echo "n_envs=${N_ENVS}"
+echo "omp_num_threads=${OMP_NUM_THREADS}"
 
 python scripts/eval_joint_delta_with_adapter.py \
     --checkpoint "$DP_CHECKPOINT" \

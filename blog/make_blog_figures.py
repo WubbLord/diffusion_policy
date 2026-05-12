@@ -113,19 +113,19 @@ def diagnostic_bar():
 
 
 def full_pipeline_bar():
-    tasks = ["Can\nPH", "Can\nMH", "Lift\nPH", "Lift\nMH", "Square\nPH", "Transport\nPH"]
-    ours = np.array([45 / 50, 50 / 50, 50 / 50, 49 / 50, 27 / 50, 0 / 50])
+    tasks = ["Can\nPH", "Can\nMH", "Lift\nPH", "Lift\nMH", "Square\nPH",
+             "Square\nMH", "Tool\nHang\nPH", "Transport\nPH", "Transport\nMH"]
+    ours = np.array([45, 50, 50, 49, 27, 23, 0, 0, 5]) / 50
     # Diffusion Policy paper Table I, state policy, DiffusionPolicy-C row.
     # Values are the reported max success rates from max / average-last-10.
-    paper_dp = np.array([1.00, 1.00, 1.00, 1.00, 1.00, 0.94])
-    counts = ["45/50", "50/50", "50/50", "49/50", "27/50", "0/50"]
+    paper_dp = np.array([1.00, 1.00, 1.00, 1.00, 1.00, 0.97, 0.50, 0.94, 0.68])
     x = np.arange(len(tasks))
-    width = 0.34
-    fig, ax = plt.subplots(figsize=(8.2, 4.2))
-    ours_bars = ax.bar(
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(9.7, 4.4))
+    ax.bar(
         x - width / 2, ours, color="#2f855a", width=width,
         label="Joint-delta DP + adapter (ours)")
-    paper_bars = ax.bar(
+    ax.bar(
         x + width / 2, paper_dp, color="#33658a", width=width,
         label="DP paper, state policy")
     ax.set_ylim(0, 1.08)
@@ -193,14 +193,14 @@ def closed_loop_line_graph():
             "mh": [49, 50, 46, 49, 44, 41, 42, 38],
         },
         "Square": {
-            "ph": [24, 16, np.nan, 0, 2, 2, 0, 3],
-            "mh": [31, 26, np.nan, 9, 4, 3, 0, 0],
+            "ph": [24, 16, 1, 0, 2, 2, 0, 3],
+            "mh": [31, 26, 10, 9, 4, 3, 0, 0],
         },
         "Tool Hang": {
-            "ph": [np.nan, np.nan, np.nan, 0, 0, 0, 0, 0],
+            "ph": [0, 0, np.nan, 0, 0, 0, 0, 0],
         },
         "Transport": {
-            "ph": [0, 2, np.nan, 0, 0, 0, np.nan, 0],
+            "ph": [0, 2, 0, 0, 0, 0, np.nan, 0],
         },
     }
     style_by_dataset = {
@@ -229,7 +229,7 @@ def closed_loop_line_graph():
     ax.set_ylim(-0.03, 1.05)
     ax.set_xticks(k)
     ax.set_yticks(np.linspace(0, 1, 5))
-    ax.set_xlabel("Closed-loop inner steps k")
+    ax.set_xlabel("Closed-loop inner steps")
     ax.set_ylabel("Test success rate")
     ax.grid(axis="x", visible=False)
 
