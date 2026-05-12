@@ -23,8 +23,10 @@ from omegaconf import OmegaConf
 from diffusion_policy.workspace.base_workspace import BaseWorkspace
 
 
-def inject_fk_runner(cfg, osc_kp=None, osc_damping_ratio=None):
+def inject_fk_runner(cfg, osc_kp=None, osc_damping_ratio=None, n_action_steps_override=None):
     """Replace cfg.task.env_runner with RobomimicJointFKtoEEFRunner config.
+
+    If n_action_steps_override is set, it overrides cfg.n_action_steps for the runner.
 
     Works regardless of whether the checkpoint was trained with env_runner
     set or null. Always overwrites.
@@ -67,7 +69,7 @@ def inject_fk_runner(cfg, osc_kp=None, osc_damping_ratio=None):
         'test_start_seed': 100000,
         'max_steps': max_steps,
         'n_obs_steps': cfg.n_obs_steps,
-        'n_action_steps': cfg.n_action_steps,
+        'n_action_steps': n_action_steps_override if n_action_steps_override is not None else cfg.n_action_steps,
         'n_latency_steps': cfg.n_latency_steps,
         'render_hw': [128, 128],
         'fps': 10,
@@ -92,14 +94,15 @@ def inject_fk_runner(cfg, osc_kp=None, osc_damping_ratio=None):
 @click.option('-d', '--device', default='cuda:0')
 @click.option('--osc_kp', type=float, default=None)
 @click.option('--osc_damping_ratio', type=float, default=None)
-def main(checkpoint, output_dir, device, osc_kp, osc_damping_ratio):
+@click.option('--n_action_steps', type=int, default=None)
+def main(checkpoint, output_dir, device, osc_kp, osc_damping_ratio, n_action_steps):
     if os.path.exists(output_dir):
-        click.confirm(f"Output path {output_dir} already exists! Overwrite?", abort=True)
+        pass  # overwrite
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     payload = torch.load(open(checkpoint, 'rb'), pickle_module=dill)
     cfg = payload['cfg']
-    inject_fk_runner(cfg, osc_kp=osc_kp, osc_damping_ratio=osc_damping_ratio)
+    inject_fk_runner(cfg, osc_kp=osc_kp, osc_damping_ratio=osc_damping_ratio, n_action_steps_override=n_action_steps)
     cls = hydra.utils.get_class(cfg._target_)
     workspace = cls(cfg, output_dir=output_dir)
     workspace: BaseWorkspace
