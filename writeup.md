@@ -508,3 +508,4 @@ Newest entries last. One line per `eval_log.json` (or job completion event).
 - `2026-05-12 17:13` job=**828543** JP square (`eval_latest_jp_kp5000_dr2.0`) — test/mean_score=0.42, train/mean_score=0.3333333333333333
 - `2026-05-12 17:13` job=**828177** actsteps sweep — finished, no eval_log found at `data/outputs/2026.05.11/*_lowdim_joint_delta_joint5k/eval_actsteps_*_kp*/eval_log.json`
 - `2026-05-12 17:31` job=**828539** demosup_ablate square (`eval_latest_nn_osc_demosup_h128`) — test/mean_score=0.56, train/mean_score=0.5
+- `2026-05-12 17:39` job=**828213** BQ NN-OSC square — finished, no eval_log found at `data/outputs/2026.05.11/*square_lowdim_joint_delta_joint5k/eval_latest_nn_osc_brianquality/eval_log.json`
