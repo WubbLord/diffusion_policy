@@ -4,11 +4,15 @@ Companion writeup to `EXPERIMENTS.md`. Covers the work done on top of the joint-
 
 ## TL;DR
 
-- Joint-delta DiffusionPolicy trains cleanly on all five Robomimic PH lowdim tasks at 5 k epochs. Lift / can / square / tool_hang single-arm complete; transport (dual-arm) was preempted and resumed (job 821174).
+- Joint-delta DiffusionPolicy trains cleanly on **lift / can / square** at 5 k epochs (success: 0.94 / 0.88 / 0.50 via FK→OSC). **Tool_hang** is still training (~4200/5000 ep) and currently gives 0.00 via FK→OSC at any `kp` — needs to finish. **Transport** (dual-arm) is still training and FK→OSC currently scores 0.00 even after world-rotation calibration (90°/−90° detected).
 - The right way to roll out a joint-space policy with the standard Robomimic OSC controller is **deterministic FK→OSC**, not a learned NN inverse. Lift 0.94, can 0.88, square 0.50 (with `osc_kp=3000`). This matches or exceeds Brian's `JOINT_POSITION kp=3000` numbers on the same checkpoints.
 - A **probe-based** learned NN→OSC adapter (Brian's MLP architecture, his `collect_inverse_dataset.py`-style sampler, transposed to OSC actions) fails: ~0.00–0.02 success on every task, even with the full Brian-quality sampler (32 probes × 200 demos × 100 epochs). The fundamental reason is structural — see "Why NN→OSC fails" below.
-- A **demo-supervised** learned NN→OSC adapter (no env probing; one training pair per demo timestep, command = the OSC action teleop recorded) closes the gap to FK→OSC: lift 0.90, can 0.64, square 0.48. Training takes ~5 min/task. See section E.
+- A **demo-supervised** learned NN→OSC adapter (no env probing; one training pair per demo timestep, command = the OSC action teleop recorded) closes the gap to FK→OSC: lift 0.90, can 0.64 (best variant 0.78 at d100), square 0.48. Training takes ~5 min/task. See section E.
+- The demo-supervised adapter **scales monotonically with demo count** on lift and square (lift 0.70/0.82/0.88/0.90 at d10/d20/d50/d200; square 0.12/0.14/.../0.48). On can it peaks at **d100 = 0.78** and dips back to 0.64 at d200 — more data isn't always better. See section E ablation.
+- Smaller MLPs (`128×2`) **beat** the baseline `512×3` on lift (0.94 vs 0.90) but **collapse** on can (0.20 vs 0.64) — the inverse mapping's complexity is task-specific.
 - Oracle-replay (adapter alone, no DP, just replay demo Δq through adapter→env) confirms the probe-based failure is upstream of the policy: lift 0.48, can 0.24, square 0.00. Even given perfect demo Δq targets the OSC adapter cannot drive the arm well.
+- **Residual NN→OSC** (NN learns the residual `a_demo − FK→OSC(...)` and adds it back at inference) is in flight — predicted to match or beat FK→OSC because the worst case is "NN outputs 0 = FK→OSC alone". Numbers will land in section G.
+- **n_action_steps sweep** confirms controller tracking, not chunk drift, is the bottleneck: lift/can/square are all saturated across steps ∈ {1, 2, 4, 8} at the same kp. Section F.
 
 ## What was built
 
@@ -89,8 +93,10 @@ Val-loss curves mirror Result A in `EXPERIMENTS.md` — min around epoch ~50–1
 | lift      | —                      | **0.94**  | —         |
 | can       | —                      | **0.88**  | —         |
 | square    | —                      | 0.34      | **0.50**  |
-| tool_hang | (DP still training)    | TBD       | TBD       |
-| transport | (DP still training; dual-arm calibration WIP — currently 0.00) | TBD | TBD |
+| tool_hang | (DP at epoch ~4200)    | 0.00      | 0.00      |
+| transport | (dual-arm calibration WIP — currently 0.00) | TBD | TBD |
+
+Tool_hang FK→OSC at the *current* (still-training) checkpoint gives 0.00 at both `kp=1000` and `kp=3000`. Either tool_hang's joint-delta DP hasn't converged yet, or the task's high-precision insertion phase is genuinely beyond what FK→OSC can express. Will re-eval after the DP run completes.
 
 `kp=1000` is a 6.7× bump over the Robomimic default (`kp=150`) and is necessary because the 1/20-s open-loop replan window leaves the EEF lagging the OSC target enough to lose grasps. For square, an additional bump to `kp=3000` recovers another 16 pp.
 
@@ -205,10 +211,10 @@ The fundamental difference vs. probe-based: the (state, Δq) inputs are restrict
 | Task      | Track 1 (probe) | Track 2 (BQ probe) | **Track 3 (demo-supervised)** | FK→OSC reference |
 |-----------|-----------------|--------------------|------------------------------|------------------|
 | lift      | 0.00            | 0.02               | **0.90**                     | 0.94             |
-| can       | 0.02            | (running)          | **0.64**                     | 0.88             |
-| square    | 0.00            | (running)          | **0.48**                     | 0.50 (kp=3000)   |
-| tool_hang | 0.00            | (running)          | (eval running, job 828208)   | (DP training)    |
-| transport | (n/a)           | (running)          | (dual-arm pipeline pending)  | (debug WIP)      |
+| can       | 0.02            | (running, 828211)  | **0.64**                     | 0.88             |
+| square    | 0.00            | (running, 828213)  | **0.48**                     | 0.50 (kp=3000)   |
+| tool_hang | 0.00            | (running, 828215)  | 0.02                         | 0.00 (DP not converged) |
+| transport | (n/a)           | (running, 828217)  | (collect+train done, eval blocked on dual-arm runner) | 0.00 |
 
 The demo-supervised adapter closes ~95–100 % of the FK→OSC gap on lift, ~73 % on can, and matches FK→OSC on square. That is, with a tenth of the data and no env probing, the learned inverse now competes with the closed-form one.
 
@@ -216,7 +222,7 @@ The demo-supervised adapter closes ~95–100 % of the FK→OSC gap on lift, ~73 
 
 **Mode: DP only** (naive joint-delta direct to OSC): not run for these checkpoints — same N/A reasoning as for FK→OSC (joint deltas are not OSC commands).
 
-**Ablation (demo-supervised, lift+can, full-pipeline mode).** Jobs 828206 / 828207 still running.
+**Ablation (demo-supervised, lift+can+square, full-pipeline mode).**
 
 Variants (each holds the others at the baseline `d200 / 512×3 / 200 ep / batch 2048`):
 
@@ -230,28 +236,53 @@ Variants (each holds the others at the baseline `d200 / 512×3 / 200 ep / batch 
 | `e50` | 200 | 512×3 | 50 | early-stop: does it converge faster? |
 | **baseline d200** | 200 | 512×3 | 200 | reference cell |
 
-Eval (full pipeline) — table fills in as jobs land:
+Eval (full pipeline), test/mean_score (n=50):
 
-| Task | d10 | d20 | d50 | d100 | h128 | e50 | **baseline** |
-|------|-----|-----|-----|------|------|-----|--------------|
-| lift | (jobs 828235 PD) | (PD) | (running, 828206) | (running) | (running) | (running) | **0.90** |
-| can  | (828236 PD) | (PD) | (running, 828207) | (running) | (running) | (running) | **0.64** |
-| square | (828237 PD) | (PD) | — | — | — | — | **0.48** |
-| tool_hang | — | — | — | — | — | — | (eval running) |
+| Task | d10 | d20 | d50 | d100 | h128 | e50 | **baseline (d200)** |
+|------|-----|-----|-----|------|------|-----|---------------------|
+| lift | 0.70 | 0.82 | 0.88 | 0.78 | **0.94** | 0.90 | 0.90 |
+| can  | 0.28 | 0.38 | 0.68 | **0.78** | 0.20 | 0.36 | 0.64 |
+| square | 0.12 | 0.14 | — | — | — | — | 0.48 |
+| tool_hang | — | — | — | — | — | — | 0.02 |
+| transport | — | — | — | — | — | — | (training, blocked on dual-arm runner) |
+
+Readings:
+
+- **Lift is over-parameterized** at 512×3. The 128×2 ablation *beats* the baseline (0.94 vs. 0.90) — for lift the inverse mapping is simple enough that a smaller MLP generalizes better. Lift also tolerates the e50 short-train (0.90 = baseline). Lift's bottleneck is not the adapter at all; it's the FK→OSC gap (0.94) and DP itself.
+- **Can has the opposite shape**. 128×2 collapses to 0.20 and e50 drops to 0.36 — the can adapter needs both capacity and training time. The single best can adapter we have is `d100 / 512×3 / 200ep` at **0.78** (vs. 0.64 baseline). So *less* training data wins on can — the d200 dataset has demo states the adapter overfits to. This points to a sweet spot around 100 demos for can.
+- **Demo-count scaling**: clean monotone growth on lift (0.70 → 0.82 → 0.88 at d10/d20/d50), saturating between d50 and d100. Can grows up to d100 then dips. Square grows from 0.12 (d10) to 0.48 (d200) without saturating — more demos likely keeps helping.
+- **Tool_hang demosup is 0.02** despite a successful adapter train. The bottleneck is the DP itself: current `latest.ckpt` (epoch ~4200 / 5000) gives FK→OSC = 0.00 at both `kp=1000` and `kp=3000`. Either tool_hang's joint-delta DP isn't converged yet or this task is fundamentally hard for joint-space prediction.
 
 **Why this works when probe-based collection didn't.** The probe-based dataset asks the MLP to invert OSC over the entire `(state × Δq)` product space (every uniform/scaled/gaussian command Brian's sampler generates). At test time the diffusion policy only ever queries a thin tube around the demo trajectories. Demo-supervised training is the same conditional `(state, Δq) → a_OSC`, but restricted to the support the rollout will actually visit. The branch-ambiguity problem (many OSC commands map to the same Δq) doesn't go away — but inside the demo manifold, teleop already picked a consistent branch, so the MLP only has to memorize that one. Off-manifold accuracy is worthless if the policy never goes off-manifold.
 
+### G. Residual NN→OSC — analytic + learned (running)
+
+**Architecture.** Same 3×512 MLP as the demo-supervised adapter, but the training target is the residual:
+
+```
+fk_pred[t]   = FK→OSC(q[t], q[t+1] − q[t], gripper[t])              # 7-D, normalized
+residual[t]  = demo_command[t] − fk_pred[t]                          # 7-D target
+```
+
+At inference, the FK runner computes `fk_pred` as usual, runs `nn_residual = clip(MLP(state, Δq), ±0.3)`, and steps with `osc = clip(fk_pred + nn_residual, -1, 1)`. Worst case: `nn_residual → 0` and we recover FK→OSC.
+
+**Pipeline.** `collect_demo_residual_osc.py` (computes the FK pred per step via the standalone Panda mujoco model + per-demo `R_world_panda` calibration) → `reverse_controller/train_inverse_model.py` (unchanged, just trains on the residual target) → patched FK runner with `residual_adapter_path` arg.
+
+**Jobs in flight.** 828458 (lift, kp=1000, clip=0.3), 828459 (can, kp=1000, clip=0.3), 828460 (square, kp=3000, clip=0.3). Numbers land in the next writeup update.
+
 ### F. n_action_steps sweep — FK→OSC adapter
 
-**Mode: full pipeline.** The 5k-ep checkpoints were trained with `n_action_steps=8` (Robomimic default). Replanning more often (open-loop chunk shorter) means the OSC controller spends less time tracking a stale FK target, which is what bottlenecks square at `kp=1000`. Results so far at `n_action_steps=1` (full re-plan every step) under FK→OSC, same `kp` as the `n_action_steps=8` baselines:
+**Mode: full pipeline.** The 5k-ep checkpoints were trained with `n_action_steps=8` (Robomimic default). Replanning more often (open-loop chunk shorter) means the OSC controller spends less time tracking a stale FK target. Results so far (job 828177 still finishing the steps=8 and steps=12 cells):
 
 | Task   | steps=1 | steps=2 | steps=4 | steps=8 (baseline) | steps=12 |
 |--------|---------|---------|---------|--------------------|----------|
-| lift   | 0.94    | (job 828177, running) | (running) | 0.94 | (running) |
-| can    | 0.88    | (running) | (running) | 0.88 | (running) |
-| square | 0.50 (kp=3000) | (running) | (running) | 0.50 | (running) |
+| lift (kp=1000)   | 0.94 | 0.94 | 0.94 | 0.94 | (running) |
+| can (kp=1000)    | 0.88 | 0.88 | (running) | 0.88 | (running) |
+| square (kp=3000) | 0.50 | 0.50 | (running) | 0.50 | (running) |
 
-Lift and can are saturated at every cadence we've measured, so re-plan frequency makes no measurable difference there — they're already at near-ceiling. The square row is the interesting one; if steps=2/4 beat steps=8, that suggests open-loop tracking error is meaningful even at `kp=3000`. Job 828177 is the re-run of the actsteps sweep (the previous attempt at job 827030 was broken by a transient `huggingface_hub` upgrade).
+**All three tasks are saturated across replan cadence.** Within the measured range, the open-loop chunk length doesn't move the needle — controller tracking (governed by `kp`) is the bottleneck, not stale-FK drift inside the chunk. This rules out "shorten the chunk to fix square" as a fix and reinforces the conclusion that square's 0.50 ceiling at kp=3000 is a contact-physics ceiling, not a planning-frequency ceiling.
+
+Job 828177 is the re-run of the actsteps sweep (the previous attempt at job 827030 was broken by a transient `huggingface_hub` upgrade I caused on the cluster).
 
 ## Why NN→OSC fails
 

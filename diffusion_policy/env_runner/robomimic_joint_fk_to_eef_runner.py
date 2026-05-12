@@ -135,6 +135,16 @@ class RobomimicJointFKtoEEFRunner(BaseLowdimRunner):
             osc_kp_ori: float = None,
             osc_damping_ratio: float = None,
             disable_world_rotation: bool = False,
+            # Residual NN adapter on top of FK->OSC. Optional. Single-arm only.
+            # If set, the rollout computes
+            #     osc = clip(FK->OSC(q, dq, grip) + clip(NN(state, dq), ±clip), -1, 1)
+            # before stepping the env. Adapter must come from
+            # reverse_controller/train_inverse_model.py (Brian's InverseControllerMLP)
+            # trained on residual targets via collect_demo_residual_osc.py.
+            residual_adapter_path: str = None,
+            residual_clip: float = 0.3,
+            residual_obs_keys: list = None,
+            residual_device: str = "cuda:0",
         ):
         super().__init__(output_dir)
 
@@ -302,6 +312,38 @@ class RobomimicJointFKtoEEFRunner(BaseLowdimRunner):
         self.fk = _PandaFK(panda_xml_path=panda_xml_path,
                            eef_body_name=eef_body_name)
 
+        # Residual NN adapter (optional).
+        self.residual_adapter = None
+        self.residual_clip = float(residual_clip)
+        self.residual_state_sls = None
+        if residual_adapter_path is not None:
+            import torch as _torch
+            from reverse_controller.common import load_inverse_checkpoint
+            payload, model, normalizer = load_inverse_checkpoint(
+                residual_adapter_path, device='cpu')
+            dev = _torch.device(residual_device)
+            model = model.to(dev)
+            model.eval()
+            norm_on_dev = {
+                name: {k: (_torch.as_tensor(v, dtype=_torch.float32, device=dev)
+                           if isinstance(v, np.ndarray) else v.to(dev))
+                       for k, v in stats.items()}
+                for name, stats in normalizer.items()
+            }
+            self.residual_adapter = model
+            self.residual_normalizer = norm_on_dev
+            self.residual_payload = payload
+            self.residual_device = dev
+            ro_keys = list(residual_obs_keys) if residual_obs_keys else list(obs_keys)
+            for k in ro_keys:
+                if k not in obs_slices:
+                    raise KeyError(f"residual_obs_keys requires {k!r} not in obs_keys")
+            self.residual_obs_keys = ro_keys
+            self.residual_state_sls = [obs_slices[k] for k in ro_keys]
+            print(f"FK runner: residual adapter loaded from {residual_adapter_path}"
+                  f" (clip={self.residual_clip}, n_obs_features="
+                  f"{sum(sl.stop - sl.start for sl in self.residual_state_sls)})")
+
     def _action_chunk_joint_to_eef(self, q_curr_b, dq_chunk_b, gripper_chunk_b,
                                    R_world_panda=None):
         """Convert a chunk of predicted joint deltas to OSC_POSE actions.
@@ -466,6 +508,32 @@ class RobomimicJointFKtoEEFRunner(BaseLowdimRunner):
                     )                                           # (B, T, 7)
                     osc_per_arm.append(osc_i)
                 osc_action = np.concatenate(osc_per_arm, axis=-1)  # (B, T, 7n)
+
+                # Optional residual NN adapter (single-arm only for now).
+                if self.residual_adapter is not None and self.n_robots == 1:
+                    import torch as _torch
+                    B, T, _ = osc_action.shape
+                    # State features at chunk start, tiled over T.
+                    state_at_chunk = np.concatenate(
+                        [obs[:, self.n_obs_steps - 1, sl] for sl in self.residual_state_sls],
+                        axis=-1)                                          # (B, S)
+                    state_chunk = np.broadcast_to(
+                        state_at_chunk[:, None, :], (B, T, state_at_chunk.shape[-1]))
+                    # NN input: concat(state, dq) per step.
+                    nn_in_np = np.concatenate(
+                        [state_chunk, joint_action[..., :7]], axis=-1).astype(np.float32)
+                    nn_in = _torch.from_numpy(nn_in_np).to(self.residual_device)
+                    mean = self.residual_normalizer['input']['mean']
+                    std  = self.residual_normalizer['input']['std']
+                    cmean = self.residual_normalizer['command']['mean']
+                    cstd  = self.residual_normalizer['command']['std']
+                    with _torch.no_grad():
+                        nn_in_norm = (nn_in - mean) / std
+                        pred_norm = self.residual_adapter(nn_in_norm)
+                        pred = pred_norm * cstd + cmean                   # (B, T, 7)
+                    residual_np = pred.detach().cpu().numpy().astype(np.float32)
+                    residual_np = np.clip(residual_np, -self.residual_clip, self.residual_clip)
+                    osc_action = np.clip(osc_action + residual_np, -1.0, 1.0)
 
                 obs, reward, done, info = env.step(osc_action)
                 done = np.all(done)
