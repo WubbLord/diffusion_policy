@@ -183,28 +183,101 @@ For context, Brian's separately-trained NN inverse on the `JOINT_POSITION` contr
 
 ### E. NN→OSC adapter — demo-supervised pipeline (new)
 
-The probe-based pipelines (Tracks 1–2) treat the inverse problem as "given a random Δq target, find the OSC command that achieves it." Demo-supervised training drops all environment-probing entirely.
+The probe-based pipelines (Tracks 1–2) treat the inverse problem as "given a random Δq target, find the OSC command that achieves it." Demo-supervised training drops all environment-probing entirely and instead uses the demos as both the *input distribution* and the *label source*.
 
-#### Demo-supervised collection procedure (`collect_demo_only_osc.py`)
+#### Conceptual setup
+
+Each Robomimic demo `i` is a sequence of `(obs_t, action_t)` pairs of length `T_i` (typically 100–400 steps), where `obs_t` includes the proprioceptive arm state and `action_t` is the OSC command teleop sent at step `t`. Critically, the demo records:
+
+- `q_t = obs_t.robot0_joint_pos`   (7-D arm joint configuration at step `t`)
+- `q_{t+1} = obs_{t+1}.robot0_joint_pos`  (joint config at the next step)
+- `action_t = a_demo[t]`            (the 7-D OSC command that produced the `q_t → q_{t+1}` transition)
+
+From this we can compute three quantities per timestep:
+
+- **state features** `s_t` — a 33-D vector concatenating `object, robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos, robot0_joint_pos` (the same obs the joint-delta DP sees; sizes 23 + 3 + 4 + 2 + 7 = 39 for can; 33 for lift; varies per task by `object` dim).
+- **desired joint delta** `Δq_t = q_{t+1} − q_t` — what the arm actually moved in joint space.
+- **OSC command** `a_demo[t]` — what teleop sent to OSC to produce that motion.
+
+The adapter is trained to predict `a_demo[t]` from `(s_t, Δq_t)`. At deployment the DP predicts `Δq_t` from observation and the adapter converts it to an OSC command.
+
+#### Collection procedure (`collect_demo_only_osc.py`)
+
+Pseudocode:
 
 ```
 for each demo:
-    for each timestep t in demo (length = 100..400 steps):
-        state         = build_state_features(obs[t], obs_keys)
-        desired_delta = q[t+1] − q[t]                              # the actual demo Δq
-        command       = demo_action[t]                             # the OSC command teleop recorded
-        shard.append({ state, desired_delta, command })
+    obs       = demo["obs"]              # dict of obs key arrays of length T
+    next_obs  = demo["next_obs"]
+    actions   = demo["actions"]          # (T, action_dim) -- OSC commands from teleop
+
+    for t in range(T):
+        state         = concat([obs[k][t] for k in obs_keys])      # 33-D
+        desired_delta = next_obs[joint_key][t] - obs[joint_key][t] # 7-D Δq
+        command       = actions[t]                                  # 7-D OSC
+
+        shard.append({
+            "state":         state,
+            "desired_delta": desired_delta,
+            "command":       command,
+        })
 ```
 
-No sim resets, no env stepping, no random sampling. The training triple count per task is exactly `Σ_demo |demo|` ≈ 20 k–60 k pairs (200 demos × 100–300 steps).
+No simulator reset, no env step, no candidate-command sampling, no rollout — pure read from the HDF5 file. The collector runs at ~12 demos/second on a single CPU. For the standard `--max-demos 200`, the full dataset of (state, Δq, command) triples per task is exactly `Σ_{i=0}^{199} T_i` ≈ 30 k–60 k examples depending on task. Lift: ~30 k. Can: ~40 k. Square: ~50 k. Tool_hang: ~60 k.
 
-#### Training
+Per-task shard files are stored under `data/reverse_controller_osc_demosup/{task}_ph/shards/demo_N.npz`. A `metadata.json` at the top of each dataset records: dataset path, obs keys, joint keys, controller (`OSC_POSE`), and supervision label (`demo_only`).
 
-Same architecture as Tracks 1/2 (3×512 SiLU+LayerNorm MLP), same loss (MSE on normalized command). 200 epochs, batch 2048, val ratio 0.05, AdamW, `lr = 1e-4`. Trains in ~5 min per task on a single H200 (vs. ~30–60 min collect step for the probe tracks).
+#### Architecture (`reverse_controller/common.InverseControllerMLP`)
 
-Obs keys for single-arm tasks: `object, robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos, robot0_joint_pos` (33-D state, matching the joint-delta DP's obs). Dual-arm transport uses `--joint-keys robot0_joint_pos,robot1_joint_pos` + the doubled obs set.
+Brian's MLP, used unchanged from Tracks 1/2 so cross-track comparisons are clean:
 
-The fundamental difference vs. probe-based: the (state, Δq) inputs are restricted to the demo manifold, and the supervision target is *the actual command the human operator used*, not "any command that produces this Δq". The MLP no longer has to invert a many-to-one map; it only has to memorize the one branch teleop already chose.
+```
+inverse_controller_mlp(state_t, Δq_t):
+    x = concat([state_t, Δq_t])          # (33 + 7) = 40-D for single-arm tasks
+    x = (x - input_mean) / input_std     # per-channel normalize using train stats
+    h = Linear(40 -> 512)(x)
+    h = LayerNorm(512)(h)
+    h = SiLU(h)
+    h = Linear(512 -> 512)(h)
+    h = LayerNorm(512)(h)
+    h = SiLU(h)
+    h = Linear(512 -> 512)(h)
+    h = LayerNorm(512)(h)
+    h = SiLU(h)
+    cmd_normalized = Linear(512 -> 7)(h)
+    cmd_raw = cmd_normalized * command_std + command_mean
+    return cmd_raw
+```
+
+Parameter count: roughly `40·512 + 512·512·2 + 512·7 + LN terms` ≈ 550 k params. Tiny by ML standards. The `input_mean / input_std / command_mean / command_std` arrays are fit on the training-split shards once before training and saved with the checkpoint.
+
+Compare ablation `h128` (2 × 128 hidden): ≈ 25 k params, 22× smaller, used to test "is the 3 × 512 capacity actually needed?". See the ablation table.
+
+#### Training (`reverse_controller/train_inverse_model.py`)
+
+- Loss: per-channel MSE on normalized commands: `‖predicted_cmd_normalized − target_cmd_normalized‖²`.
+- Optimizer: AdamW, `lr = 1e-4`, no weight decay.
+- Batch size: 2048. Each batch covers ~5% of a typical task's pairs.
+- Epochs: 200 (default), shuffle every epoch.
+- Train/val split: 95/5 random demos. Validation is `val_loss` (MSE on normalized command) per epoch.
+- Wall time: ~5 minutes total per task on a single H200 (data loading and MLP forward/backward are equally cheap).
+
+Why MSE works despite the OSC inverse being many-to-one in general: the demo distribution implicitly selects one branch of the inverse map (the branch teleop happened to use), so the supervision target is *self-consistent across the demo set*. The MLP doesn't need to learn how to pick a branch; it just memorizes the branch teleop already picked. Off-manifold the branch ambiguity returns, but the policy at test time stays close enough to the demo manifold that this rarely matters.
+
+#### Why this is fundamentally different from the probe-based pipelines
+
+| Axis | Probe-based (Tracks 1, 2) | Demo-supervised (Track 3) |
+|------|---------------------------|---------------------------|
+| Dataset size | 160 k–640 k triples | 30 k–60 k triples |
+| Input distribution | covers `(state × OSC_command)` uniformly via sampler | restricted to demo manifold |
+| Label source | sim-measured `Δq` from random commands | demo-recorded OSC command |
+| What the MLP fits | "inverse of OSC over the entire command space" | "inverse of OSC along the demo manifold" |
+| Branch ambiguity | unresolved (MSE averages branches) | resolved by demos (teleop picked one) |
+| Collect cost | 30–60 min/task (env stepping) | <1 min/task (HDF5 read only) |
+| Train cost | ~10 min/task (8192 batch, 100 ep) | ~5 min/task (2048 batch, 200 ep) |
+| Lift full-pipeline | 0.00 / 0.02 | **0.90** |
+| Can full-pipeline | 0.02 / TBD | **0.64** |
+| Square full-pipeline | 0.00 / TBD | **0.48** |
 
 **Mode: full pipeline** (DP `latest.ckpt` + adapter). Side-by-side with the two probe tracks and FK→OSC for direct comparison.
 
