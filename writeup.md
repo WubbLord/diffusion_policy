@@ -102,6 +102,65 @@ Tool_hang FK→OSC at the *current* (still-training) checkpoint gives 0.00 at bo
 
 Closed-loop FK on square (mode: full pipeline, re-FK after every controller step instead of once per policy step) gave identical 0.34 at `kp=1000` — drift inside the chunk is not the bottleneck, controller tracking is.
 
+#### How FK→OSC actually works
+
+The runner is a closed-form, learning-free converter from "joint-space prediction" to "Cartesian controller command", with five moving parts:
+
+1. **Side-car mujoco model.** A separate `mujoco.MjModel` (loaded once from the robosuite-bundled `panda/robot.xml`) holds the kinematic chain. No gripper, contacts, or actuators — just bone geometry. `mujoco.mj_kinematics(model, data)` propagates joint angles through the chain and writes per-body poses into `data.xpos / data.xmat`. Used purely to compute "what world pose does this `q` produce?"; never stepped, never modified.
+
+2. **Single FK call.** `_PandaFK.fk(q)` writes `q` into `data.qpos[:7]`, calls `mj_kinematics`, and reads back `(data.xpos[eef_bid], data.xmat[eef_bid])` for the `right_hand` body — a 3-D world position and a 3×3 rotation matrix in the **panda model's base frame**. ~5 µs per call.
+
+3. **Per-step Δp / Δr computation.** For each (B-th env, t-th step in the chunk):
+
+   ```
+   q ← q_curr                                # (7,) joint state from env at chunk start
+   p_prev, R_prev ← FK(q)                    # panda-frame initial pose
+
+   for t in range(T):
+       q ← q + dq_chunk[t]                   # integrate predicted Δq
+       p_t, R_t ← FK(q)                      # new panda-frame pose
+
+       dp_panda ← p_t − p_prev                              # 3-D translation
+       dR_panda ← R_t @ R_prev.T                            # 3×3 rotation delta
+       dr_panda ← Rotation.from_matrix(dR_panda).as_rotvec() # 3-D axis-angle
+
+       # Rotate into world frame
+       dp_world ← R_world_panda @ dp_panda
+       dr_world ← R_world_panda @ dr_panda
+
+       # Normalize to OSC's [-1, 1] command space using its own output_max
+       osc[t, 0:3] ← clip(dp_world / 0.05, -1, 1)
+       osc[t, 3:6] ← clip(dr_world / 0.5,  -1, 1)
+       osc[t, 6]   ← gripper_chunk[t]                       # passthrough
+
+       p_prev, R_prev ← p_t, R_t
+   ```
+
+   The axis-angle vector `Rotation.from_matrix(ΔR).as_rotvec()` is exactly what `OSC_POSE` expects in its orientation slot — no quaternion or Euler conversion. The 0.05 m / 0.5 rad divisors come from the controller's `output_max` config; OSC rescales the normalized command back up internally.
+
+4. **World↔panda calibration (once per rollout per arm).** `_PandaFK.fk` returns poses in the panda model's base frame. Robomimic's `robotN_eef_pos / _eef_quat` are in the **world** frame. For single-arm tasks the two coincide (panda mount is identity-rotated); for transport the two arms are mounted facing each other, giving 90° / −90° z-rotations. The runner discovers this from each env's first observation:
+
+   ```
+   q0       = obs[0, n_obs_steps - 1, joint_slice]
+   p_env    = obs[0, n_obs_steps - 1, eef_pos_slice]
+   q_env    = obs[0, n_obs_steps - 1, eef_quat_slice]
+   _, R_fk0 = panda_fk.fk(q0)                              # panda-frame R
+   R_env0   = scipy.Rotation.from_quat(q_env).as_matrix()  # world-frame R
+   R_world_panda = R_env0 @ R_fk0.T
+   ```
+
+   The runner logs `arm{i} world<-panda z-angle ≈ X°` once per rollout; for transport you see `+90.0°` and `−90.0°`, for single-arm tasks `0.0°`.
+
+5. **OSC controller takes over.** The env's `OSC_POSE` controller receives our `[Δp_norm, Δr_norm, gripper]`, multiplies by `output_max` to get the actual target delta, computes the wrench `F = K_p · (x_target − x_current) + K_d · ẋ_current` with our configurable `K_p = osc_kp_pos`, projects through the manipulator Jacobian to joint torques, applies them, and steps physics.
+
+**Why this can't fail in the way NN→OSC fails.** FK→OSC never inverts OSC. It computes the trajectory the policy intends the EE to follow — uniquely determined by `q_curr` and the predicted `Δq` sequence via FK — and hands that trajectory to the controller in the controller's own command language. The controller handles redundancy resolution, nullspace projection, and torque computation as always. The only failure surfaces are explicit and diagnosable:
+
+- Controller can't physically track the requested Δp/Δr in 50 ms. → tuned via `kp`.
+- The policy's predicted Δq trajectory is itself bad. → bounded by DP training quality.
+- The world↔panda calibration is wrong. → logged and verifiable.
+
+NN→OSC has at least five additional failure surfaces (the many-to-one inverse, distribution mismatch with the policy, `output_max` saturation, no physics prior, rollout drift) — most of them silent.
+
 **Adapter only is N/A for FK→OSC** — FK→OSC is analytic (no learned weights), so adapter-only oracle replay reduces to feeding the demo's own `Δq[t]` through the analytic Jacobian. We didn't run this; it would essentially measure controller tracking error.
 
 **DP only is N/A for these checkpoints** — DP outputs joint deltas; the OSC controller expects 6-D Cartesian. Sending joint deltas straight into OSC would just be reinterpreting 7 numbers as `(Δpos, Δrot, gripper)` arbitrarily. Brian's blog confirms the analogous baseline on `JOINT_POSITION` gives 0/50 (his Can MH naive joint-delta row).
@@ -327,6 +386,22 @@ Readings:
 - **Tool_hang demosup is 0.02** despite a successful adapter train. The bottleneck is the DP itself: current `latest.ckpt` (epoch ~4200 / 5000) gives FK→OSC = 0.00 at both `kp=1000` and `kp=3000`. Either tool_hang's joint-delta DP isn't converged yet or this task is fundamentally hard for joint-space prediction.
 
 **Why this works when probe-based collection didn't.** The probe-based dataset asks the MLP to invert OSC over the entire `(state × Δq)` product space (every uniform/scaled/gaussian command Brian's sampler generates). At test time the diffusion policy only ever queries a thin tube around the demo trajectories. Demo-supervised training is the same conditional `(state, Δq) → a_OSC`, but restricted to the support the rollout will actually visit. The branch-ambiguity problem (many OSC commands map to the same Δq) doesn't go away — but inside the demo manifold, teleop already picked a consistent branch, so the MLP only has to memorize that one. Off-manifold accuracy is worthless if the policy never goes off-manifold.
+
+### H. FK→JP — analytic adapter, JOINT_POSITION controller (running)
+
+Symmetric counterpart to FK→OSC: same diffusion policy joint-delta predictions, but the analytic adapter now produces *joint position targets* and sends them to the `JOINT_POSITION` controller rather than translating to OSC. This is the path Brian's blog used for his NN→JP adapter — but here we use the *analytic* version (no learning, just integration), which should match or exceed Brian's learned JP numbers if the JP controller is competently tuned.
+
+**Pipeline.** The runner is the existing `RobomimicJointLowdimRunner` (already in the repo, used for the original joint-delta evals). It receives the DP's `Δq_t` chunk, integrates `q_target[i] = q_curr + cumsum(Δq[0..i])` internally, and sends `q_target` (7-D absolute joint position) to the JP controller. The JP controller does its own PD-per-joint tracking with `controller_kp` we set explicitly (robosuite default 50 is way too low — the arm lags badly).
+
+**`kp` sweep.** Same five kp values as the OSC sweep: 300, 1000, 3000, 5000 at `damping_ratio = 2.0`. Jobs 828541 (lift), 828542 (can), 828543 (square).
+
+**What we expect.**
+
+- JOINT_POSITION's inverse problem is structurally trivial (`command = q + Δq` element-wise) and has no nullspace ambiguity at the command interface. The analytic adapter should be near-perfect on the inverse side.
+- The remaining failure surface is JP's PD-per-joint tracking under the same 50 ms open-loop chunk. Higher `kp` should help, with the usual stiffness-vs-stability tradeoff.
+- Brian's blog reports 50/50 on Can MH at `kp=3000` (his NN→JP adapter); the analytic version should be at least that — possibly *higher* since the analytic adapter has zero training noise.
+
+Table will land here once 828541/542/543 finish.
 
 ### G. Residual NN→OSC — analytic + learned (running)
 
