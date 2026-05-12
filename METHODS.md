@@ -98,6 +98,53 @@ Interpretation:
 - OSC gain matters: increasing `kp` from `1000` to `3000` improved Square FK-to-OSC from `0.34` to `0.50`.
 - A closed-loop FK variant on Square at `kp=1000` reportedly stayed at `0.34`, suggesting stale FK targets inside the action chunk were not the dominant bottleneck for that setting.
 
+## 2026-05-12: EEF/OSC Probe-Adapter Training And Evals
+
+Status: completed for Can/Lift/Square PH/MH; Tool Hang PH adapter training completed after eval submission; Transport PH/MH probe collection still running
+
+Methods:
+- Goal: train a probe-based inverse adapter for the native Robomimic `OSC_POSE` controller, analogous to the `JOINT_POSITION` reverse-controller adapters.
+- Synthetic data generation:
+  - Reset Robomimic lowdim simulation to demonstration states.
+  - Sample `32` normalized `OSC_POSE` commands per timestep, mixing anchored commands around the recorded demo OSC action with random uniform/noisy probes.
+  - Step the OSC controller once and record the actual joint transition.
+  - Train inverse pairs `(full lowdim state, desired_Δq_actual) -> normalized OSC command`.
+- Adapter: `InverseControllerMLP`, input `full lowdim state ⊕ desired_Δq`, output normalized `OSC_POSE` command in `[-1, 1]`.
+- Full lowdim state for single-arm tasks: `object`, `robot0_eef_pos`, `robot0_eef_quat`, `robot0_gripper_qpos`, `robot0_joint_pos`, `robot0_joint_vel`.
+- Held-out-demo split: PH demos `0:150` train and `150:200` eval; MH demos `0:250` train and `250:300` eval.
+- Training: `100` epochs, batch size `8192`.
+- Adapter-only eval: reset to held-out demo states, compute `Δq_demo = q[t+1] - q[t]`, predict OSC command with the adapter, step the OSC controller once, and compare actual vs desired joint delta.
+- Full pipeline eval:
+
+```text
+latest joint-delta DP checkpoint -> desired joint delta + gripper
+EEF/OSC probe adapter f(state, desired joint delta) -> OSC_POSE command
+Robomimic OSC_POSE controller -> rollout success
+```
+
+- Full pipeline protocol: `n_test=50`, `n_train=6`, latest corresponding joint-delta DP checkpoint.
+- Scripts: `reverse_controller/collect_inverse_dataset_osc.py`, `scripts/eval_osc_adapter_one_step.py`, `scripts/eval_joint_delta_with_osc_adapter.py`.
+- Output roots:
+  - Adapters: `data/reverse_controller_osc_probe/*_osc_pose_n32_heldout_demo`.
+  - Full pipeline evals: `data/outputs/**/eval_latest_full50_with_eef_probe_adapter`.
+
+Results:
+
+| Task | Adapter Status | One-Step Delta MAE | One-Step RMSE | Full Pipeline Test | Full Pipeline Train |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `can_ph` | complete | `0.001141` | `0.002222` | `0/50` | `0/6` |
+| `can_mh` | complete | `0.000894` | `0.001607` | `0/50` | `0/6` |
+| `lift_ph` | complete | `0.001114` | `0.001946` | `0/50` | `0/6` |
+| `lift_mh` | complete | `0.001022` | `0.002107` | `0/50` | `0/6` |
+| `square_ph` | complete | `0.001218` | `0.001944` | `0/50` | `0/6` |
+| `square_mh` | complete | `0.000987` | `0.001724` | `0/50` | `0/6` |
+| `tool_hang_ph` | training complete; eval not submitted in this batch | pending | pending | pending | pending |
+| `transport_ph` | probe collection running | pending | pending | pending | pending |
+| `transport_mh` | probe collection running | pending | pending | pending | pending |
+
+- Interpretation: the probe-trained OSC adapters locally track held-out demo joint deltas with roughly `1e-3` rad MAE on single-arm tasks, but the full joint-delta DP plus probe-OSC-adapter rollout still gets `0/50` on all completed tasks.
+- This matches the Sourish branch observation: probe-based NN-to-OSC can fit one-step local data, but `OSC_POSE -> Δq` is branch-ambiguous and policy-predicted deltas are not guaranteed to lie on the same command branch as the probe labels.
+
 ## 2026-05-11: Full DP+Adapter Rollout Evals Across Robomimic
 
 Status: completed for listed runs
@@ -163,7 +210,7 @@ Results:
 
 ## 2026-05-11: Full Pipeline (DP+Adapter) Closed-Loop K Sweep
 
-Status: partial; all completed k values available at the time of this entry are recorded below
+Status: completed
 
 Methods:
 - Goal: evaluate the learned joint-delta DP plus learned adapter when each predicted joint transition is executed as an inner-loop joint-space target.
@@ -183,22 +230,24 @@ next policy observation comes from the live simulator state
 - Output roots: `data/outputs/**/eval_closed_loop_adapter_k1_8`.
 - Original Slurm arrays: `819020` through `819027`.
 - Resubmitted short/preempted indices: `819340` through `819343`, `821132` through `821136`, then `822295` through `822298`.
-- Final reliability resubmits with `n_envs=4` and explicit progress logging: `828530` Square PH k3, `828531` Square MH k3, `828532` Tool Hang PH k1-k3, and `828533` Transport PH k3/k7.
+- Final reliability resubmits with `n_envs=4` and explicit progress logging: `828530` Square PH k3, `828531` Square MH k3, `828532` Tool Hang PH k1-k3, `828533` Transport PH k3/k7, and `828692` Transport MH k1-k8.
+- Transport MH k1/k2 were preempted before completion as `828692_1` and `828692_2`; restarted as `829071_[1-2%2]` with the same output root and `n_envs=4`, then completed.
 
 Results:
 
 | Task | k=1 | k=2 | k=3 | k=4 | k=5 | k=6 | k=7 | k=8 | Best Complete k | Status |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| `can_mh` | `50/50` | `40/50` | `12/50` | `9/50` | `11/50` | `6/50` | `5/50` | `10/50` | `k=1` | complete |
 | `can_ph` | `45/50` | `31/50` | `2/50` | `8/50` | `4/50` | `2/50` | `1/50` | `1/50` | `k=1` | complete |
+| `can_mh` | `50/50` | `40/50` | `12/50` | `9/50` | `11/50` | `6/50` | `5/50` | `10/50` | `k=1` | complete |
 | `lift_ph` | `50/50` | `47/50` | `31/50` | `32/50` | `6/50` | `5/50` | `9/50` | `14/50` | `k=1` | complete |
 | `lift_mh` | `49/50` | `50/50` | `46/50` | `49/50` | `44/50` | `41/50` | `42/50` | `38/50` | `k=2` | complete |
 | `square_ph` | `24/50` | `16/50` | `1/50` | `0/50` | `2/50` | `2/50` | `0/50` | `3/50` | `k=1` | complete |
 | `square_mh` | `31/50` | `26/50` | `10/50` | `9/50` | `4/50` | `3/50` | `0/50` | `0/50` | `k=1` | complete |
 | `tool_hang_ph` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | all k tie | complete |
-| `transport_ph` | `0/50` | `2/50` | `0/50` | `0/50` | `0/50` | `0/50` | pending | `0/50` | `k=2` | `k=7` running as `828533_7` |
+| `transport_ph` | `0/50` | `2/50` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `0/50` | `k=2` | complete |
+| `transport_mh` | `6/50` | `9/50` | `0/50` | `1/50` | `0/50` | `0/50` | `0/50` | `0/50` | `k=2` | complete |
 
-- Interpretation so far: for Can/Lift, more inner-loop steps usually reduce task success even when the adapter can track residuals. The best full-policy rollout result is generally `k=1`, with Lift-MH as the main exception where `k=2` reaches `50/50`.
+- Interpretation: for Can/Lift, more inner-loop steps usually reduce task success even when the adapter can track residuals. The best full-policy rollout result is generally `k=1`, with Lift-MH as the main exception where `k=2` reaches `50/50`. Transport-MH also improves from `6/50` at `k=1` to `9/50` at `k=2`, but remains weak overall.
 
 ## 2026-05-11: EEF Baseline And No-Adapter Joint-Delta Rollout Evals
 

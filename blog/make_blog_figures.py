@@ -200,7 +200,8 @@ def closed_loop_line_graph():
             "ph": [0, 0, 0, 0, 0, 0, 0, 0],
         },
         "Transport": {
-            "ph": [0, 2, 0, 0, 0, 0, np.nan, 0],
+            "ph": [0, 2, 0, 0, 0, 0, 0, 0],
+            "mh": [6, 9, 0, 1, 0, 0, 0, 0],
         },
     }
     style_by_dataset = {
