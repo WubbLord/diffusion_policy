@@ -492,3 +492,7 @@ This is why FK→OSC, which is a closed-form inverse using the analytic Jacobian
   - Actsteps sweep (FK→OSC): `827030` (broken by HF upgrade), `828177` (re-run).
   - Demo-supervised ablation: `828206` lift d50/d100/h128/e50 eval, `828207` can same, `828235`/`828236`/`828237` demo-count sweep (d10/d20) for lift/can/square.
 - WandB tags: `joint5k`, `joint_delta`, `nn_osc_brian`, `nn_osc_brianquality`, `nn_osc_demosup`.
+
+## Auto-harvested results log
+Newest entries last. One line per `eval_log.json` (or job completion event).
+- `2026-05-12 16:55` job=**828211** BQ NN-OSC can — finished, no eval_log found at `data/outputs/2026.05.11/*can_lowdim_joint_delta_joint5k/eval_latest_nn_osc_brianquality/eval_log.json`
