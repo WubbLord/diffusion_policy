@@ -29,6 +29,26 @@ Data layout under `data/`:
 - `outputs/2026.05.11/01.22.*_*joint_delta_joint5k/` — the five 5k-epoch DP checkpoints (single-arm tasks) and their `eval_latest_*` subdirs.
 - `reverse_controller_osc/{task}_ph/` — Track-1 ("quick") NN-OSC pipeline: 8-probes × 200-demos collect, 50-epoch MLP train, oracle replay.
 - `reverse_controller_osc_bq/{task}_ph/` — Track-2 ("Brian-quality") NN-OSC pipeline: 32-probes × 200-demos with Brian's exact sampler, 100-epoch MLP train, oracle replay + onestep eval.
+- `reverse_controller_osc_demosup/{task}_ph/` — Track-3 (demo-supervised) NN-OSC pipeline: one (state, Δq, command) triple per demo timestep, no env probing.
+- `reverse_controller_osc_demosup_{d10,d20,d50,d100,h128,e50}/{task}_ph/` — demo-supervised ablation variants (data count / MLP size / epoch budget).
+
+## Experimental setup — the unchanging knobs
+
+The same simulator, control frequency, episode length, and success criteria apply to every row in every table below; calling them out once.
+
+**Simulator and controller.** robosuite 1.4 → Robomimic env wrapper. Control frequency 20 Hz (50 ms per env.step). OSC_POSE controller with `output_max = [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]` (positional Δ in m, axis-angle Δ in rad, default ratio) and `damping_ratio = 1.0` unless explicitly varied. Default `kp = 150` is too low for our 8-step open-loop chunks; we bump to `kp = 1000` for lift/can and `kp = 3000` for square. The OSC controller expects its 6-D command in *normalized* `[-1, 1]` per axis and rescales internally to the `output_max` range.
+
+**Task variants.** All five Robomimic lowdim tasks, PH split (proficient-human, 200 demos each). Tasks: `lift` (single-arm cube lift), `can` (PickPlaceCan single-arm sort), `square` (NutAssemblySquare single-arm insertion), `tool_hang` (single-arm hook-and-hang precision), `transport` (dual-arm handover). Transport is the only dual-arm task and adds the world↔panda base-rotation calibration step.
+
+**DP architecture and training.** Identical to upstream `train_diffusion_unet_lowdim_workspace` plus our `obs_noise_std` injector. UNet1D diffusion policy with hidden `[256, 512, 1024]`, `kernel_size=5`, `n_groups=8`. Prediction horizon `T = 16`, observation history `n_obs_steps = 2`, action execution `n_action_steps = 8` (open-loop chunk between replans). 100 DDPM denoising steps at inference. EMA `power = 0.75`. AdamW, `lr = 1e-4` cosine, `weight_decay = 1e-6`, `batch_size = 256`. Target 5000 epochs unless preempted.
+
+**Action target.** For joint-delta DP only: `a_t = [ Δq_{robot0} (7), Δq_{robot1} (7 if dual-arm), gripper_{robot0} (1), gripper_{robot1} (1 if dual-arm) ]` — layout "joints_then_grippers". `Δq[t] = q[t+1] − q[t]` is computed directly from `obs/robotN_joint_pos` in the dataset's `_data_to_joint_obs` builder. Gripper command stays the raw value from `actions[:, gripper_idx]` (index `-1` for single-arm, `[6, 13]` for transport).
+
+**Observation features.** Single-arm: `object, robot0_eef_pos (3), robot0_eef_quat (4), robot0_gripper_qpos (2), robot0_joint_pos (7)` — total 33-D after `object` (which is 23-D for lift, 14-D for can, 14-D for square, 53-D for tool_hang; 41-D for transport). Transport: same set duplicated for `robot1_*`, total 73-D. `joint_vel` is intentionally excluded — DP doesn't see velocities, neither does the adapter, so train/deploy distributions match.
+
+**Eval protocol.** Each cell in the result tables is `test/mean_score` from a single deterministic eval run: `test_start_seed = 100000`, `n_test = 50` rollouts, `n_envs = 28` (Async vector env), `max_steps = 400` for single-arm tasks and `700` for tool_hang and transport. The mean is over the 50 held-out episodes. We also report `train/mean_score` (6 episodes from the train split) for sanity. Success is the env's own `is_success()` (binary per episode, reduced via `any` across the episode horizon — i.e. did the env ever reach the success state). Videos are recorded for the first 4 test and 2 train episodes for failure-mode analysis.
+
+**Hardware.** All training and eval on CSAIL `csail-shared-h200` partition (NVIDIA H200), 1 GPU per job, 4 CPUs, 32–80 GB RAM, `shared-if-available` QoS (preemptible, 24 h time limit). DP training wall time: 6 h (lift) → ~11 h (square) → still running (tool_hang / transport).
 
 ## Eval modes — what each row actually measures
 
@@ -82,10 +102,52 @@ Closed-loop FK on square (mode: full pipeline, re-FK after every controller step
 
 ### C. NN→OSC adapter — Brian's pipeline transposed to OSC
 
-Two training tracks. Both use Brian's `InverseControllerMLP` (3×512 hidden, SiLU, LayerNorm) and the same input layout (`state` ⊕ `desired_Δq`, normalize per-channel, predict OSC command).
+#### Architecture
 
-- **Track 1 ("quick")** — 8 probes/demo × 200 demos, 50 epochs, batch 8192. Total ~80 k (state, Δq, command) triples per task.
-- **Track 2 ("Brian-quality")** — 32 probes/demo × 200 demos with Brian's exact anchored sampler (`{0, demo, 2·demo, 4·demo, 8·demo, 16·demo, -demo}` + 35/35/30 uniform / scaled-demo / gaussian, all clipped to `[-1,1]`), 100 epochs, batch 8192, val ratio 0.05. Total ~250 k triples per task. Lift completed at the time of writing; the other tasks were not finished before this writeup.
+Brian's `InverseControllerMLP` (`reverse_controller/common.py`):
+- Input: concatenate state features (per-task obs vector, e.g. 33-D for lift/can/square, 73-D for transport) and the *desired joint delta* (7-D single-arm, 14-D dual-arm). For single-arm tasks the input is `(33 + 7) = 40` floats.
+- Hidden layers: 3 × Linear(512) + LayerNorm + SiLU.
+- Output head: Linear → 7-D (single-arm) or 14-D (dual-arm) OSC command in `[-1, 1]` normalized action space.
+- Normalizers (input mean/std, command mean/std) are computed once over the training shards and stored in the checkpoint. At inference the runner reads them to map raw obs → MLP input → raw OSC command.
+
+#### Data collection — Brian's synthetic probe procedure
+
+The collector resets the simulator to each demo's state, samples one or more candidate OSC commands per state, executes each command for *one* env.step, and records the resulting Δq:
+
+```
+for each demo:
+    for each timestep t in demo:
+        sim.reset_to(demo_state[t])
+        q_before = sim.q()
+        for k in range(samples_per_step):
+            cmd = sampler(demo_command[t])              # ← see distribution below
+            sim.step(cmd)
+            q_after = sim.q()
+            shard.append({
+                "state":         build_state_features(obs[t]),
+                "desired_delta": q_after - q_before,     # what this command actually produced
+                "command":       cmd,                    # the OSC command we sent
+            })
+            sim.reset_to(demo_state[t])
+```
+
+Brian's sampler distribution (`reverse_controller/collect_inverse_dataset_osc.py`):
+
+| Fraction | Source | Notes |
+|----------|--------|-------|
+| anchored | `{0, a_demo, 2·a_demo, 4·a_demo, 8·a_demo, 16·a_demo, −a_demo}` | the 7 anchor commands per step |
+| 35 % of remainder | `Uniform(-1, 1)^6` | exploration over the full OSC range |
+| 35 % of remainder | `factor · a_demo + N(0, 0.1)` with `factor ~ Uniform(0, 20)` | scaled-demo + noise |
+| 30 % of remainder | `N(0, 0.3)` | gaussian |
+
+All commands are clipped to `[-1, 1]` per axis (OSC normalized action range). The gripper command is a passthrough of `a_demo[gripper_idx]` and not perturbed.
+
+Two training tracks. Both use the architecture and sampler above; they differ in `samples_per_step` and epoch budget.
+
+- **Track 1 ("quick")** — `samples_per_step = 8`, 200 demos, 50 training epochs, batch 8192. Total ≈ 8 × 200 × (avg 100 steps/demo) ≈ 160 k (state, Δq, command) triples per task.
+- **Track 2 ("Brian-quality")** — `samples_per_step = 32` (matches Brian's blog), 200 demos, 100 training epochs, batch 8192, val ratio 0.05. Total ≈ 32 × 200 × 100 ≈ 640 k triples per task. Lift completed at the time of writing; the other four BQ pipelines (can, square, tool_hang, transport) are running now via jobs 828210–828217.
+
+Both tracks train with AdamW, `lr = 1e-4`, MSE loss between predicted OSC command and the sampler's recorded command (normalized).
 
 **Mode: full pipeline** (DP `latest.ckpt` + adapter). Eval-dir names in parentheses for cross-reference.
 
@@ -115,7 +177,28 @@ For context, Brian's separately-trained NN inverse on the `JOINT_POSITION` contr
 
 ### E. NN→OSC adapter — demo-supervised pipeline (new)
 
-The probe-based pipelines (Tracks 1–2) treat the inverse problem as "given a random Δq target, find the OSC command that achieves it." Demo-supervised training instead drops all environment-probing: for each demo timestep `t`, use exactly one training pair `(state_t, q_{t+1}-q_t) → a_OSC[t]`, where `a_OSC[t]` is the *real OSC command teleop recorded*. No env-stepping, no resets, no random anchors. Implementation is `collect_demo_only_osc.py` + `reverse_controller/train_inverse_model.py` (unchanged). Architecture is still Brian's 3×512 SiLU+LayerNorm MLP. Obs keys are the joint-delta workspace obs (`object, robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos, robot0_joint_pos`), so `state` is 33-D. Trains in ~5 min/task at 200 epochs, batch 2048 on a single H200.
+The probe-based pipelines (Tracks 1–2) treat the inverse problem as "given a random Δq target, find the OSC command that achieves it." Demo-supervised training drops all environment-probing entirely.
+
+#### Demo-supervised collection procedure (`collect_demo_only_osc.py`)
+
+```
+for each demo:
+    for each timestep t in demo (length = 100..400 steps):
+        state         = build_state_features(obs[t], obs_keys)
+        desired_delta = q[t+1] − q[t]                              # the actual demo Δq
+        command       = demo_action[t]                             # the OSC command teleop recorded
+        shard.append({ state, desired_delta, command })
+```
+
+No sim resets, no env stepping, no random sampling. The training triple count per task is exactly `Σ_demo |demo|` ≈ 20 k–60 k pairs (200 demos × 100–300 steps).
+
+#### Training
+
+Same architecture as Tracks 1/2 (3×512 SiLU+LayerNorm MLP), same loss (MSE on normalized command). 200 epochs, batch 2048, val ratio 0.05, AdamW, `lr = 1e-4`. Trains in ~5 min per task on a single H200 (vs. ~30–60 min collect step for the probe tracks).
+
+Obs keys for single-arm tasks: `object, robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos, robot0_joint_pos` (33-D state, matching the joint-delta DP's obs). Dual-arm transport uses `--joint-keys robot0_joint_pos,robot1_joint_pos` + the doubled obs set.
+
+The fundamental difference vs. probe-based: the (state, Δq) inputs are restricted to the demo manifold, and the supervision target is *the actual command the human operator used*, not "any command that produces this Δq". The MLP no longer has to invert a many-to-one map; it only has to memorize the one branch teleop already chose.
 
 **Mode: full pipeline** (DP `latest.ckpt` + adapter). Side-by-side with the two probe tracks and FK→OSC for direct comparison.
 
@@ -133,12 +216,28 @@ The demo-supervised adapter closes ~95–100 % of the FK→OSC gap on lift, ~73 
 
 **Mode: DP only** (naive joint-delta direct to OSC): not run for these checkpoints — same N/A reasoning as for FK→OSC (joint deltas are not OSC commands).
 
-**Ablation (demo-supervised, lift+can, full-pipeline mode).** Jobs 828206 / 828207 still running; results will fill in here:
+**Ablation (demo-supervised, lift+can, full-pipeline mode).** Jobs 828206 / 828207 still running.
 
-| Task | d50 (50 demos) | d100 (100 demos) | h128 (MLP 128×2) | e50 (50 epochs) | reference: full d200/512×3/200ep |
-|------|---|---|---|---|---|
-| lift | (running) | (running) | (running) | (running) | 0.90 |
-| can  | (running) | (running) | (running) | (running) | 0.64 |
+Variants (each holds the others at the baseline `d200 / 512×3 / 200 ep / batch 2048`):
+
+| Variant | Demos | Hidden | Epochs | Purpose |
+|---------|-------|--------|--------|---------|
+| `d10` | 10 | 512×3 | 200 | min-data: do we need 200 demos? |
+| `d20` | 20 | 512×3 | 200 | min-data extension |
+| `d50` | 50 | 512×3 | 200 | quarter-data |
+| `d100` | 100 | 512×3 | 200 | half-data |
+| `h128` | 200 | 128×2 | 200 | small-arch: does the inverse really need 3×512? |
+| `e50` | 200 | 512×3 | 50 | early-stop: does it converge faster? |
+| **baseline d200** | 200 | 512×3 | 200 | reference cell |
+
+Eval (full pipeline) — table fills in as jobs land:
+
+| Task | d10 | d20 | d50 | d100 | h128 | e50 | **baseline** |
+|------|-----|-----|-----|------|------|-----|--------------|
+| lift | (jobs 828235 PD) | (PD) | (running, 828206) | (running) | (running) | (running) | **0.90** |
+| can  | (828236 PD) | (PD) | (running, 828207) | (running) | (running) | (running) | **0.64** |
+| square | (828237 PD) | (PD) | — | — | — | — | **0.48** |
+| tool_hang | — | — | — | — | — | — | (eval running) |
 
 **Why this works when probe-based collection didn't.** The probe-based dataset asks the MLP to invert OSC over the entire `(state × Δq)` product space (every uniform/scaled/gaussian command Brian's sampler generates). At test time the diffusion policy only ever queries a thin tube around the demo trajectories. Demo-supervised training is the same conditional `(state, Δq) → a_OSC`, but restricted to the support the rollout will actually visit. The branch-ambiguity problem (many OSC commands map to the same Δq) doesn't go away — but inside the demo manifold, teleop already picked a consistent branch, so the MLP only has to memorize that one. Off-manifold accuracy is worthless if the policy never goes off-manifold.
 
@@ -170,12 +269,12 @@ This is why FK→OSC, which is a closed-form inverse using the analytic Jacobian
 
 ## What's still open
 
-- **Tool-hang FK→OSC** (job 818757 still running, ~18 h in, ~4100/5000 ep). Expect closer to lift/can than to square, since tool_hang is single-arm and reach-only.
-- **Transport dual-arm**. Two issues: (a) DP still has NaN val_loss as of the resume (job 821174); (b) FK→OSC currently scores 0/0 even after per-arm world-rotation calibration (90° / −90° detected) and `osc_kp=1000`. Action-layout debug needed.
-- **Demo-supervised NN→OSC on tool_hang + transport**. The structural argument that demo-supervised wins because the policy stays on-manifold predicts these should also work; the only blocker is that the upstream DP is still training.
+- **Tool-hang FK→OSC** (job 818757 still running, ~20 h in, ~4200/5000 ep). Expect closer to lift/can than to square, since tool_hang is single-arm and reach-only. Job 828208 runs a partial eval against the current `latest.ckpt` while training continues.
+- **Transport dual-arm FK→OSC**. Two issues: (a) DP val_loss is healthy but `test_mean_score` stuck at 0.0; (b) FK→OSC currently scores 0.00 even after per-arm world-rotation calibration (90° / −90° detected for the two inward-facing arms) at `osc_kp=1000`. Action-layout matches the dataset convention (`[arm0_dq, arm1_dq, arm0_grip, arm1_grip]` aka "joints_then_grippers"), so the bug is elsewhere — likely either (i) per-arm Jacobian frame mixing or (ii) FK chunk integration drift compounding more than at single-arm scale. Open debug item.
+- **Transport NN→OSC eval** (any track). `RobomimicJointBrianOSCRunner` is single-arm only — `n_robots` is fixed to 1 and there is no per-arm command assembly. Adding dual-arm support is the analogue of what we already did in `RobomimicJointFKtoEEFRunner`. Adapter checkpoint for transport demosup is being trained right now (job 828231); eval blocked until the dual-arm NN runner exists.
 - **Demo-supervised oracle replay**. `oracle_replay_osc.py` is hard-coded to `DEFAULT_OBS_KEYS` (40-dim state), but the demo-supervised collector uses the joint-delta workspace obs (33-dim), so oracle replay errors out with a normalizer-shape mismatch. The full-pipeline rollout numbers in (E) are not yet flanked by oracle numbers; that requires plumbing the saved `obs_keys` through `oracle_replay_osc.py`.
-- **Brian-quality sampler on can / square / tool_hang / transport**. Lift didn't move (0.02 full-pipeline) and demo-supervised dominates this axis anyway; can deprioritize.
-- **Best-by-val-loss checkpointing on joint workspaces** (Experiment 5). Until this is wired in we eval `latest.ckpt` which is past the val-loss minimum; some of the joint-delta FK→OSC numbers may improve a couple of points if we re-eval at the val-min checkpoint.
+- **Brian-quality sampler on can / square / tool_hang / transport**. Demo-supervised dominates lift on this axis, but we never *measured* the other tasks' BQ numbers. Currently running as jobs 828210–828217. Predicted: stays ≤ 0.05 on all four (the structural argument), but worth confirming for the writeup.
+- **Best-by-val-loss checkpointing on joint workspaces** (Experiment 5 in `EXPERIMENTS.md`). Until this is wired in we eval `latest.ckpt` which is past the val-loss minimum; some of the joint-delta FK→OSC numbers may improve a couple of points if we re-eval at the val-min checkpoint.
 - **Failure-mode taxonomy on the videos**. The probe-based NN-OSC videos consistently show wrist swivel + grasp-miss; FK→OSC failures on square are object-knock and pose-collisions; demo-supervised failures on can are gripper-misalignment on the bin-place. Not yet tabulated.
 
 ## Pointers
@@ -184,6 +283,12 @@ This is why FK→OSC, which is a closed-form inverse using the analytic Jacobian
 - Brian's reference inverse-controller pipeline: `reverse_controller/` package. We follow his data format and `InverseControllerMLP`; the only thing we change in `collect_inverse_dataset_osc.py` is which command the env steps with.
 - Demo-supervised collector: `collect_demo_only_osc.py` + `demosup_pipeline.sh`.
 - n_action_steps sweep: `sweep_action_steps.sh`.
-- Adapter checkpoints uploaded to Hugging Face: see `adapters/` and the demo-supervised `inverse_mlp/best.pt` under `data/reverse_controller_osc_demosup/{task}_ph/`.
-- Slurm jobs of record: `818751`, `818753`, `818755`, `818757`, `821174` (training); `821042`–`821051` (Track-1 NN-OSC pipelines); `821027`–`821145` (Track-2 BQ pipelines); `827030` (actsteps sweep); `827035`–`827037` (demo-supervised lift/can/square).
-- WandB tags: `joint5k`, `joint_delta`, `nn_osc_brian`, `nn_osc_brianquality`.
+- Adapter checkpoints uploaded to Hugging Face: https://huggingface.co/sour5blue/diffusion-policy-osc-adapters — probe-based (Track 1) in `probe_nn_osc/`, demo-supervised (Track 3) in `demosup_nn_osc/{task}/`.
+- Slurm jobs of record:
+  - DP training: `818751` lift, `818753` can, `818755` square, `818757` tool_hang (still running), `821174` transport resume (still running).
+  - Track 1 (probe quick) NN-OSC: `821042`–`821051`.
+  - Track 2 (BQ probe) NN-OSC: `821027`–`821145` (lift only); `828210`–`828217` (can/square/tool_hang/transport, in flight).
+  - Track 3 (demo-supervised) NN-OSC: `827035` lift, `827036` can, `827037` square, `827301` tool_hang collect+train, `828208` tool_hang full eval, `828231` transport collect+train.
+  - Actsteps sweep (FK→OSC): `827030` (broken by HF upgrade), `828177` (re-run).
+  - Demo-supervised ablation: `828206` lift d50/d100/h128/e50 eval, `828207` can same, `828235`/`828236`/`828237` demo-count sweep (d10/d20) for lift/can/square.
+- WandB tags: `joint5k`, `joint_delta`, `nn_osc_brian`, `nn_osc_brianquality`, `nn_osc_demosup`.
