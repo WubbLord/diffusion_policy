@@ -79,8 +79,8 @@ All rollouts: `test_start_seed=100000`, `n_test=50`, `n_envs=28`, `max_steps=400
 | lift       | 818751 | COMPLETED (5000 ep)     | 6h 23m    |
 | can        | 818753 | COMPLETED (5000 ep)     | 9h 59m    |
 | square     | 818755 | COMPLETED (5000 ep)     | 10h 34m   |
-| tool_hang  | 818757 | RUNNING (~4100/5000 ep) | 17h+      |
-| transport  | 821174 | RUNNING (resume from ~3900/5000 ep) | 19h+ |
+| tool_hang  | 818757 | COMPLETED (5000 ep)     | 21h 09m   |
+| transport  | 821174 / 828593 | RUNNING (cumulative ~epoch 4200+/5000; will time out at 24h, 828593 queued via `--dependency=afterany:821174` to finish the run) | 23h 30m so far |
 
 Val-loss curves mirror Result A in `EXPERIMENTS.md` — min around epoch ~50–100, then drift up. We always eval the `latest.ckpt` for fair compare (best-val checkpointing is Experiment 5 in `EXPERIMENTS.md`; not yet wired into the joint workspace).
 
@@ -93,10 +93,10 @@ Val-loss curves mirror Result A in `EXPERIMENTS.md` — min around epoch ~50–1
 | lift      | —                      | **0.94**  | —         |
 | can       | —                      | **0.88**  | —         |
 | square    | —                      | 0.34      | **0.50**  |
-| tool_hang | (DP at epoch ~4200)    | 0.00      | 0.00      |
+| tool_hang | (DP fully trained, 5000 ep) | 0.00 | 0.00 |
 | transport | (dual-arm calibration WIP — currently 0.00) | TBD | TBD |
 
-Tool_hang FK→OSC at the *current* (still-training) checkpoint gives 0.00 at both `kp=1000` and `kp=3000`. Either tool_hang's joint-delta DP hasn't converged yet, or the task's high-precision insertion phase is genuinely beyond what FK→OSC can express. Will re-eval after the DP run completes.
+Tool_hang FK→OSC at the *final* `latest.ckpt` (job 818757 ran to 5000 ep, 21h 09m) still gives 0.00 at both `kp=1000` and `kp=3000`. Demosup NN→OSC on the same final checkpoint is 0.02. So the bottleneck on tool_hang is not DP convergence — the task's high-precision insertion phase is genuinely beyond what FK→OSC can express at our control bandwidth, or the joint-delta target itself is too coarse a representation for the fine-motor portion of the task. (A `kp=5000` cell and a finer-grained adapter/controller config are open follow-ups.)
 
 `kp=1000` is a 6.7× bump over the Robomimic default (`kp=150`) and is necessary because the 1/20-s open-loop replan window leaves the EEF lagging the OSC target enough to lose grasps. For square, an additional bump to `kp=3000` recovers another 16 pp.
 
@@ -393,15 +393,25 @@ Symmetric counterpart to FK→OSC: same diffusion policy joint-delta predictions
 
 **Pipeline.** The runner is the existing `RobomimicJointLowdimRunner` (already in the repo, used for the original joint-delta evals). It receives the DP's `Δq_t` chunk, integrates `q_target[i] = q_curr + cumsum(Δq[0..i])` internally, and sends `q_target` (7-D absolute joint position) to the JP controller. The JP controller does its own PD-per-joint tracking with `controller_kp` we set explicitly (robosuite default 50 is way too low — the arm lags badly).
 
-**`kp` sweep.** Same five kp values as the OSC sweep: 300, 1000, 3000, 5000 at `damping_ratio = 2.0`. Jobs 828541 (lift), 828542 (can), 828543 (square).
+**`kp` sweep.** kp values 300, 1000, 3000 (and pending 5000) at `damping_ratio = 2.0`. Jobs 828541 (lift), 828542 (can), 828543 (square).
 
-**What we expect.**
+**Results so far (partial — kp=3000 row + can/square kp=1000 cells still running).**
 
-- JOINT_POSITION's inverse problem is structurally trivial (`command = q + Δq` element-wise) and has no nullspace ambiguity at the command interface. The analytic adapter should be near-perfect on the inverse side.
-- The remaining failure surface is JP's PD-per-joint tracking under the same 50 ms open-loop chunk. Higher `kp` should help, with the usual stiffness-vs-stability tradeoff.
-- Brian's blog reports 50/50 on Can MH at `kp=3000` (his NN→JP adapter); the analytic version should be at least that — possibly *higher* since the analytic adapter has zero training noise.
+| Task   | kp=300 | kp=1000 | kp=3000 | FK→OSC reference |
+|--------|--------|---------|---------|------------------|
+| lift   | 0.48   | 0.72    | running | 0.94 (kp=1000) |
+| can    | 0.04   | running | pending | 0.88 (kp=1000) |
+| square | 0.00   | running | pending | 0.50 (kp=3000) |
 
-Table will land here once 828541/542/543 finish.
+The sweep script's `[fail]` annotation in stdout is a "score below cell-success threshold" flag, **not** a crash — the `eval_log.json` files are written normally.
+
+**Reading the partial data.**
+
+- The "structurally trivial inverse" argument predicted JP would match or beat FK→OSC at high kp. So far it **doesn't** on lift: JP `kp=1000` = 0.72 vs FK→OSC `kp=1000` = 0.94. The remaining `kp=3000` cells will tell us whether JP closes the gap or stalls below FK→OSC.
+- Can at `kp=300` = 0.04 is a much steeper drop from baseline than lift (which still got 0.48 at the same kp). This matches Brian's blog observation that can's joint trajectories are harder to track at low PD stiffness.
+- Square at `kp=300` = 0.00 isn't surprising — square already needed `kp=3000` on the OSC side to break above 0.34.
+
+A clean table comparing FK→OSC vs JP at matched kp will land in the next update once kp=3000 rollouts complete.
 
 ### G. Residual NN→OSC — analytic + learned (running)
 
@@ -416,7 +426,17 @@ At inference, the FK runner computes `fk_pred` as usual, runs `nn_residual = cli
 
 **Pipeline.** `collect_demo_residual_osc.py` (computes the FK pred per step via the standalone Panda mujoco model + per-demo `R_world_panda` calibration) → `reverse_controller/train_inverse_model.py` (unchanged, just trains on the residual target) → patched FK runner with `residual_adapter_path` arg.
 
-**Jobs in flight.** 828458 (lift, kp=1000, clip=0.3), 828459 (can, kp=1000, clip=0.3), 828460 (square, kp=3000, clip=0.3). Numbers land in the next writeup update.
+**Jobs and results — clip=0.3 (828458/459/460 COMPLETED).**
+
+| Task | kp | clip | residual+FK score | FK alone (ref) | Δ vs FK alone |
+|------|----|------|-------------------|----------------|---------------|
+| lift   | 1000 | 0.3 | 0.86 | 0.94 | **−8 pp** |
+| can    | 1000 | 0.3 | 0.34 | 0.88 | **−54 pp** |
+| square | 3000 | 0.3 | 0.02 | 0.50 | **−48 pp** |
+
+This **contradicts the original "worst case is FK→OSC alone" prediction**. The residual NN at `clip=0.3` is actively pulling rollouts off-manifold — 0.3 of OSC's normalized range is up to ±0.015 m / ±0.15 rad of additive correction every step on top of FK, which is large enough that any per-step prediction error compounds into trajectory drift. Square is hit hardest because OSC's stiffness ceiling is already binding there; an extra noisy correction tips it over.
+
+**Fix in flight — clip=0.05 (828555/556/557, running).** Same DP + adapter checkpoints, residual clipped to ±0.05 (i.e. at most ±2.5 mm / ±25 mrad per step on top of FK). If clip=0.05 still hurts, the residual approach is fundamentally broken at inference (signs / frame mismatch, not magnitude), and we drop it. If clip=0.05 lands within ±2 pp of FK alone, residual is harmless but not useful at the current cap; the next step is to train it on a *smaller-residual* target distribution (e.g. teleop − FK, restricted to demos where FK already tracks well).
 
 ### F. n_action_steps sweep — FK→OSC adapter
 
@@ -425,8 +445,8 @@ At inference, the FK runner computes `fk_pred` as usual, runs `nn_residual = cli
 | Task   | steps=1 | steps=2 | steps=4 | steps=8 (baseline) | steps=12 |
 |--------|---------|---------|---------|--------------------|----------|
 | lift (kp=1000)   | 0.94 | 0.94 | 0.94 | 0.94 | (running) |
-| can (kp=1000)    | 0.88 | 0.88 | (running) | 0.88 | (running) |
-| square (kp=3000) | 0.50 | 0.50 | (running) | 0.50 | (running) |
+| can (kp=1000)    | 0.88 | 0.88 | 0.88 | 0.88 | (running) |
+| square (kp=3000) | 0.50 | 0.50 | 0.50 | 0.50 | (running) |
 
 **All three tasks are saturated across replan cadence.** Within the measured range, the open-loop chunk length doesn't move the needle — controller tracking (governed by `kp`) is the bottleneck, not stale-FK drift inside the chunk. This rules out "shorten the chunk to fix square" as a fix and reinforces the conclusion that square's 0.50 ceiling at kp=3000 is a contact-physics ceiling, not a planning-frequency ceiling.
 
@@ -448,8 +468,9 @@ This is why FK→OSC, which is a closed-form inverse using the analytic Jacobian
 
 ## What's still open
 
-- **Tool-hang FK→OSC** (job 818757 still running, ~20 h in, ~4200/5000 ep). Expect closer to lift/can than to square, since tool_hang is single-arm and reach-only. Job 828208 runs a partial eval against the current `latest.ckpt` while training continues.
-- **Transport dual-arm FK→OSC**. Two issues: (a) DP val_loss is healthy but `test_mean_score` stuck at 0.0; (b) FK→OSC currently scores 0.00 even after per-arm world-rotation calibration (90° / −90° detected for the two inward-facing arms) at `osc_kp=1000`. Action-layout matches the dataset convention (`[arm0_dq, arm1_dq, arm0_grip, arm1_grip]` aka "joints_then_grippers"), so the bug is elsewhere — likely either (i) per-arm Jacobian frame mixing or (ii) FK chunk integration drift compounding more than at single-arm scale. Open debug item.
+- **Tool-hang FK→OSC** (job 818757 now COMPLETED at 5000 ep, 21h 09m). Even the fully-trained checkpoint scores 0.00 at `kp=1000` and `kp=3000`; demosup NN→OSC on the same checkpoint = 0.02. The task is genuinely beyond what joint-delta + FK→OSC at our control bandwidth can express. Next experiments to disambiguate: (a) `kp=5000` cell, (b) `n_action_steps=1` cell, (c) the demo-derived `q_target` trajectory replay (no DP) to check whether the demos themselves are tracked successfully under FK→OSC.
+- **Transport dual-arm FK→OSC**. Two issues: (a) DP val_loss is healthy and still improving (0.07–0.08 now vs 0.112 at epoch 3900) but `test_mean_score` stuck at 0.0; (b) FK→OSC currently scores 0.00 even after per-arm world-rotation calibration (90° / −90° detected for the two inward-facing arms) at `osc_kp=1000`. Action-layout matches the dataset convention (`[arm0_dq, arm1_dq, arm0_grip, arm1_grip]` aka "joints_then_grippers"), so the bug is elsewhere — likely either (i) per-arm Jacobian frame mixing or (ii) FK chunk integration drift compounding more than at single-arm scale. Diagnostic data so far: pure-FK calibration is mathematically exact (`‖R_hand_world(FK) − R_hand_world(obs)‖_F = 0` on both arms; both `R_world_panda` are clean +90° / −90° z-rotations). A demo-replay control (feed the demo's own `Δq` through FK→OSC) gave 0/5; a raw-action replay (skip FK, send the demo's recorded OSC commands directly) gave 1/5 — so the env's `reset_to` + delta-OSC playback is itself flaky and the demo-replay control is inconclusive. Need a deterministic-replay test under matched seeds before drawing further conclusions. Job 821174 continues training; 828593 queued via `--dependency=afterany:821174` to take the run to 5000 ep.
+- **Residual NN→OSC clip=0.3 was net-negative** (lift −8 pp, can −54 pp, square −48 pp vs FK→OSC alone). Clip=0.05 rerun is in flight (828555/556/557). If clip=0.05 also hurts, the approach is structurally wrong at inference, not magnitude-wrong. Section G has the table.
 - **Transport NN→OSC eval** (any track). `RobomimicJointBrianOSCRunner` is single-arm only — `n_robots` is fixed to 1 and there is no per-arm command assembly. Adding dual-arm support is the analogue of what we already did in `RobomimicJointFKtoEEFRunner`. Adapter checkpoint for transport demosup is being trained right now (job 828231); eval blocked until the dual-arm NN runner exists.
 - **Demo-supervised oracle replay**. `oracle_replay_osc.py` is hard-coded to `DEFAULT_OBS_KEYS` (40-dim state), but the demo-supervised collector uses the joint-delta workspace obs (33-dim), so oracle replay errors out with a normalizer-shape mismatch. The full-pipeline rollout numbers in (E) are not yet flanked by oracle numbers; that requires plumbing the saved `obs_keys` through `oracle_replay_osc.py`.
 - **Brian-quality sampler on can / square / tool_hang / transport**. Demo-supervised dominates lift on this axis, but we never *measured* the other tasks' BQ numbers. Currently running as jobs 828210–828217. Predicted: stays ≤ 0.05 on all four (the structural argument), but worth confirming for the writeup.
@@ -464,7 +485,7 @@ This is why FK→OSC, which is a closed-form inverse using the analytic Jacobian
 - n_action_steps sweep: `sweep_action_steps.sh`.
 - Adapter checkpoints uploaded to Hugging Face: https://huggingface.co/sour5blue/diffusion-policy-osc-adapters — probe-based (Track 1) in `probe_nn_osc/`, demo-supervised (Track 3) in `demosup_nn_osc/{task}/`.
 - Slurm jobs of record:
-  - DP training: `818751` lift, `818753` can, `818755` square, `818757` tool_hang (still running), `821174` transport resume (still running).
+  - DP training: `818751` lift, `818753` can, `818755` square, `818757` tool_hang (COMPLETED 5000 ep), `821174` transport resume (running, near 24 h time limit), `828593` queued (`afterany:821174`) to finish transport to 5000 ep.
   - Track 1 (probe quick) NN-OSC: `821042`–`821051`.
   - Track 2 (BQ probe) NN-OSC: `821027`–`821145` (lift only); `828210`–`828217` (can/square/tool_hang/transport, in flight).
   - Track 3 (demo-supervised) NN-OSC: `827035` lift, `827036` can, `827037` square, `827301` tool_hang collect+train, `828208` tool_hang full eval, `828231` transport collect+train.
