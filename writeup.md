@@ -496,3 +496,4 @@ This is why FK→OSC, which is a closed-form inverse using the analytic Jacobian
 ## Auto-harvested results log
 Newest entries last. One line per `eval_log.json` (or job completion event).
 - `2026-05-12 16:55` job=**828211** BQ NN-OSC can — finished, no eval_log found at `data/outputs/2026.05.11/*can_lowdim_joint_delta_joint5k/eval_latest_nn_osc_brianquality/eval_log.json`
+- `2026-05-12 16:57` job=**828541** JP lift (`eval_latest_jp_kp5000_dr2.0`) — test/mean_score=0.98, train/mean_score=0.8333333333333334
