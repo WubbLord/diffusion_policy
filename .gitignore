@@ -143,3 +143,5 @@ dmypy.json
 .codex
 slurm/logs/
 
+.results_watcher_state.json
+results_watcher.log
