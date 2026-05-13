@@ -307,13 +307,8 @@ th {
     <p>
       DP <a class="cite" href="#ref-diffusion-policy">[1]</a> formulates 
       visuomotor control as denoising over robot action sequences
-      and reports strong performance across simulated and real manipulation
-      benchmarks, including RoboMimic. We
-      keep the same low-dimensional diffusion policy pipeline and focus on a
-      detail that is easy to overlook: the action vector has to mean something
-      to the controller that executes it. A joint delta computed from the next
-      logged state can be a useful target, but it still has to be translated
-      before a joint-position controller can use it.
+      and performs well on RoboMimic. We keep its low-dimensional policy
+      architecture and study the action interface beneath it.
     </p>
     <p>
       RoboMimic provides the demonstration datasets and benchmark tasks used
@@ -334,10 +329,7 @@ th {
       <a class="cite" href="#ref-robotdiffuse">[7]</a> studies diffusion for
       constrained manipulator planning. Those methods mainly improve the policy
       representation with kinematic structure, robot-body features, or planning
-      constraints. Our work is complementary and narrower: we keep the standard
-      DP backbone and RoboMimic state, then isolate whether desired joint motion
-      has the correct action semantics for the controller that executes it. Thus, our
-      improvement is diagnostic and practical rather than architectural.
+      constraints; our work is a diagnostic study of the controller interface.
     </p>
     <p>
       State-only imitation learning is another close connection. Radosavovic et
@@ -356,14 +348,9 @@ th {
       This work is also related to action-modeling methods such as Implicit Behavioral Cloning (IBC)
       <a class="cite" href="#ref-ibc">[10]</a> and Behavior
       Transformers <a class="cite" href="#ref-bet">[11]</a>, which handle
-      multimodal continuous actions. These methods and DP share the same broad
-      goal: learn expressive behavior-cloning policies for continuous robot
-      actions, especially when demonstrations admit multiple plausible next
-      moves. Our contribution is about what those actions mean after they are
-      predicted. A powerful multimodal action model can still fail if its labels
-      describe desired state transitions rather than commands in the deployment
-      controller's action space, so the adapter can be viewed as a controller
-      semantics layer that could sit underneath any of these policy models.
+      multimodal continuous actions. These models improve action prediction;
+      our adapter addresses whether the predicted action has executable
+      controller semantics.
     </p>
   </section>
 
@@ -388,10 +375,9 @@ th {
 
     <h3>Learned joint-position adapter</h3>
     <p>
-      The adapter used in the main joint-position experiments is a three-layer
-      multilayer perceptron (MLP) with 512 hidden units per layer, sigmoid
-      linear unit (SiLU) activations, and layer normalization. Its state input
-      is the full low-dimensional simulator state used for adapter training:
+      The main adapter is a three-layer multilayer perceptron (MLP) that maps
+      full low-dimensional simulator state and desired joint transition to a
+      physical joint-position command. Its state input includes
       object, end-effector position and quaternion, gripper position
       state, joint position, and joint velocity.
     </p>
@@ -508,20 +494,13 @@ th {
       transition
       \(\Delta q_{\text{demo}} = q[t+1] - q[t]\). We then sample
       32 candidate physical joint-position commands
-      \(u\) in radians,
-      clip them to
-      \([-0.25, 0.25]\) per
-      joint, convert them to the normalized controller range, append the logged gripper command, and execute one
+      \(u\), append the logged gripper command, and execute one
       joint-position control step.
     </p>
     <p>
-      The command samples are deliberately concentrated near plausible demo
-      motion while still covering off-demo directions. The first anchors are
-      \(0, \Delta q_{\text{demo}}, 2\Delta q_{\text{demo}}, 4\Delta q_{\text{demo}}, 8\Delta q_{\text{demo}}, 16\Delta q_{\text{demo}}, -\Delta q_{\text{demo}}\). The
-      remaining samples mix uniform commands over the
-      full range, scaled-demo commands with factors in
-      \([0, 20]\) plus
-      noise, and zero-mean Gaussian commands. After each probe, we measure the
+      Samples are concentrated near plausible demo motion while still covering
+      off-demo directions: zero, demo-scaled anchors, uniform commands, noisy
+      scaled-demo commands, and Gaussian commands. After each probe, we measure the
       actual resulting joint transition produced by the controller,
       \(\Delta q_{\text{actual}}\).
       Each training example is therefore
@@ -535,45 +514,41 @@ th {
       We also evaluate a closed-loop execution mode for this same learned
       adapter. Instead of treating the predicted transition as a one-shot
       command, the control loop sets a joint target
-      \(q_{\text{target}} = q_{\text{current}} + \Delta q_{\text{desired}}\),
-      where \(q_{\text{current}}\) is the live joint-position vector and
-      \(q_{\text{target}}\) is the desired joint-position vector after the
-      predicted transition. For \(k\) inner
-      steps, it reads the live simulator joint state, computes the residual
-      \(q_{\text{target}} - q_{\text{current}}\), passes that residual through the adapter, sends the resulting
-      joint-position command to the controller, and steps the simulator. The
-      first inner step uses the full desired delta; later steps use the
-      remaining tracking error before returning the next observation to the
-      policy.
+      \(q_{\text{target}} = q_{\text{current}} + \Delta q_{\text{desired}}\).
+      For \(k\) inner steps, it recomputes the live residual
+      \(q_{\text{target}} - q_{\text{current}}\), passes that residual through
+      the adapter, and steps the joint-position controller before returning the
+      next observation to the policy.
     </p>
 
     <h3>Analytic joint-position adapter</h3>
     <p>
       We also tested a learning-free analytic adapter for the
-      <code>JOINT_POSITION</code> interface. It is labeled FK in the plots, but
-      in this experiment it does not convert joint motion into end-effector
-      commands. The policy predicts desired arm-joint deltas
+      <code>JOINT_POSITION</code> interface. It is labeled as forward kinematics (FK) in plots. For a 7-DoF Panda,
+      \(q \in \mathbb{R}^{7}\), while end-effector velocity is six-dimensional:
+      \(\dot{x} = [v,\omega] = J(q)\dot{q}\), with
+      \(J(q) \in \mathbb{R}^{6 \times 7}\). Away from singularities,
+      \(\operatorname{rank} J = 6\), so
+      \(\dim \ker J = 1\). This null-space direction is the elbow-swivel motion
+      that changes joints without moving the gripper. A true FK-to-end-effector
+      adapter would discard that dimension; this joint-position baseline does
+      not.
+    </p>
+    <p>
+      Instead, the policy predicts desired arm-joint deltas
       \(\Delta q_i \in \mathbb{R}^{7}\). At the start of a policy chunk, the
-      runner reads the live joint position \(q_0\) and analytically integrates
-      the predicted deltas into target joint positions:
-      \(q_t = q_0 + \sum_{i=0}^{t} \Delta q_i\).
+      runner reads the live joint position \(q_0\) and integrates
+      \(q_t = q_0 + \sum_{i=0}^{t} \Delta q_i\). The command is the displacement
+      from the current joint state toward \(q_t\), divided by the joint-position
+      controller scale and clipped to \([-1, 1]\). The gripper command is
+      appended unchanged. This has no learned weights and assumes the controller
+      realizes the requested displacement closely enough in one step.
     </p>
     <p>
-      The command is the joint displacement from the current joint state toward
-      this target, divided by the joint-position controller scale and clipped to
-      \([-1, 1]\), the normalized robosuite action range. The original gripper
-      command is appended unchanged. This baseline has no learned weights and
-      no state-dependent inverse model: it assumes the joint-position controller
-      will realize the requested displacement closely enough in one control
-      step.
-    </p>
-    <p>
-      The comparison is useful because it isolates whether a fixed analytic
-      mapping is enough. In long rollouts it often is not: finite-gain
-      joint-position tracking and DP prediction noise compound over time, and
-      there is no Cartesian feedback term to pull the end effector back toward a
-      task-relevant pose. The learned adapter can use the live state to correct
-      some of this controller mismatch.
+      In long rollouts, finite-gain joint tracking and DP prediction noise
+      compound without Cartesian feedback to pull the end effector back toward a
+      task-relevant pose. The learned adapter can use live state to correct some
+      of this controller mismatch.
     </p>
   </section>
 
@@ -759,8 +734,9 @@ th {
     <p>
       Our central contribution is to make the action-interface mismatch explicit.
       RoboMimic <a class="cite" href="#ref-robomimic">[2]</a> demonstrations
-      contain both state transitions and controller actions, but those objects
-      are not interchangeable. A measured joint
+      contain both state transitions and controller actions, but we cannot use the former to prompt the controller.
+      We must use either the provided 
+      A measured joint
       transition tells us where the arm went; it does not tell us which command a
       different controller should receive to reproduce that motion.
     </p>
@@ -794,14 +770,13 @@ th {
       execution.
     </p>
     <p>
-      These results also define the limits of the current system. All experiments
-      are in simulation, and the adapter assumes accurate low-dimensional state.
-      Synthetic inverse-controller data is expensive: Can MH alone used over two
-      million one-step probes. Command saturation is common, so some requested
-      deltas exceed what the controller can realize in one step. Finally, the
+      We also discuss limitations of our current system. All experiments
+      are in simulation, and the adapter assumes accurate low-dimensional state, which can be difficult to acquire in the rea lworld.
+      Additionally, synthetic inverse-controller data is expensive: Can MH alone used over two
+      million one-step probes. Finally, the
       adapter is local. It can translate a desired joint transition, but it does
       not reason about object pose, future contacts, or two-arm coordination
-      beyond what is already present in the policy output.
+      beyond what is already present in the policy output. This, POOP POOP
     </p>
   </section>
 
