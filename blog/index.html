@@ -257,10 +257,12 @@ th {
       controller: the same desired motion can mean different things under
       operational-space, joint-position, velocity, or torque control. In
       the RoboMimic framework
-      <a class="cite" href="#ref-robomimic">[2]</a>, the logged actions are
-      operational-space control (OSC) end-effector commands for the
-      Robosuite <a class="cite" href="#ref-robosuite">[3]</a> controller, not
-      raw joint commands.
+	      <a class="cite" href="#ref-robomimic">[2]</a>, the logged actions are
+	      operational-space control (OSC) end-effector commands for the
+	      Robosuite <a class="cite" href="#ref-robosuite">[3]</a> controller, not
+	      raw joint commands. Without an adapter, we can only train on those
+	      provided ground-truth end-effector commands, an inflexible interface
+	      choice shared by many robotics datasets.
     </p>
     <p>
       This project asks what happens when we keep the same demonstrations but
@@ -313,28 +315,22 @@ th {
     <p>
       RoboMimic provides the demonstration datasets and benchmark tasks used
       here, and robosuite provides the simulator and controller abstractions.
-      The logs contain states, state transitions, and OSC actions. Those OSC
-      actions are commands for the original controller; once evaluation moves to
-      joint-position control, the matching command label is missing.
-    </p>
-    <p>
-      Recent joint-space diffusion methods address related kinematic issues. Ma
-      et al. introduces RK-Diffuser
-      <a class="cite" href="#ref-hdp">[4]</a>, which learns end-effector and
-      joint trajectories with differentiable kinematics. Lv et al. <a class="cite" href="#ref-kstar">[5]</a> adds a Unified Robot
-      Description Format (URDF)-derived graph and kinematic loss,
-      Lv et al.
-      <a class="cite" href="#ref-kadp">[6]</a> uses three-dimensional (3D)
-      points on the robot body, and Mou et al. 
-      <a class="cite" href="#ref-robotdiffuse">[7]</a> studies diffusion for
-      constrained manipulator planning. Those methods mainly improve the policy
-      representation with kinematic structure, robot-body features, or planning
-      constraints; our work is a diagnostic study of the controller interface.
-    </p>
-    <p>
-      State-only imitation learning is another close connection. Radosavovic et
-      al. <a class="cite" href="#ref-state-only">[8]</a> and Liu et al.
-      <a class="cite" href="#ref-depo">[9]</a> learn inverse dynamics when
+		      The logs contain states, state transitions, and OSC actions. Those OSC
+		      actions are commands for the original controller; once evaluation moves to
+		      joint-position control, the matching command label is missing. Other robotics datasets
+		      face the same limitation. Walke et al.'s BridgeData V2
+		      <a class="cite" href="#ref-bridgedata">[4]</a> uses a seven-dimensional
+		      action space made of six-dimensional Cartesian end-effector motion and
+		      gripper control. Franka Kitchen, introduced by Gupta et al.
+		      <a class="cite" href="#ref-franka-kitchen">[5]</a>, makes the opposite
+		      fixed choice: it provides ground-truth joint-position commands rather than
+		      end-effector commands. Both cases illustrate the same issue: offline robot
+		      datasets expose one controller interface, not interchangeable command labels.
+	    </p>
+	    <p>
+	      State-only imitation learning is another close connection. Radosavovic et
+	      al. <a class="cite" href="#ref-state-only">[10]</a> and Liu et al.
+	      <a class="cite" href="#ref-depo">[11]</a> learn inverse dynamics when
       demonstrations do not provide the needed actions. Our adapter plays a
       similar role for a different controller interface: it turns the generic
       joint transition \(\Delta q = q[t+1] - q[t]\) into the command that the
@@ -344,10 +340,10 @@ th {
       purely action-missing setting, and we evaluate the inverse map both in
       one-step tracking and in full task rollouts.
     </p>
-    <p>
-      This work is also related to action-modeling methods such as Implicit Behavioral Cloning (IBC)
-      <a class="cite" href="#ref-ibc">[10]</a> and Behavior
-      Transformers <a class="cite" href="#ref-bet">[11]</a>, which handle
+	    <p>
+	      This work is also related to action-modeling methods such as Implicit Behavioral Cloning (IBC)
+	      <a class="cite" href="#ref-ibc">[12]</a> and Behavior
+	      Transformers <a class="cite" href="#ref-bet">[13]</a>, which handle
       multimodal continuous actions. These models improve action prediction;
       our adapter addresses whether the predicted action has executable
       controller semantics.
@@ -732,37 +728,19 @@ th {
   <section>
     <h2>Discussion</h2>
     <p>
-      Our central contribution is to make the action-interface mismatch explicit.
-      RoboMimic <a class="cite" href="#ref-robomimic">[2]</a> demonstrations
-      contain both state transitions and controller actions, but we cannot use the former to prompt the controller.
-      We must use either the provided 
-      A measured joint
-      transition tells us where the arm went; it does not tell us which command a
-      different controller should receive to reproduce that motion.
-    </p>
-    <p>
-      The second contribution is the adapter formulation itself. We treat
-      \(\Delta q = q[t+1] - q[t]\) as a desired local transition, not as an
-      action. The learned adapter maps
-      \((s, \Delta q_{\text{desired}})\) into the
-      command space of the deployment controller. This lets us keep the
-      trajectory-modeling strengths of DP while adding the missing controller
-      semantics as a separate, testable component.
-    </p>
-    <p>
-      The third contribution is diagnostic. We evaluate the adapter in oracle
-      replay before using a learned policy, which separates policy error from
-      controller-translation error. When oracle replay succeeds but full rollout
-      fails, the policy is the likely bottleneck. When oracle replay fails, the
-      desired transition is not being converted into a robust command sequence.
-      This distinction matters because one-step delta MAE alone can look good
-      while contact-rich rollouts still drift off the demonstration manifold.
-    </p>
-    <p>
-      The broader empirical contribution is a map of where this idea works. On
+	      Our central contribution is to make the action-interface mismatch explicit.
+	      RoboMimic <a class="cite" href="#ref-robomimic">[2]</a> demonstrations
+	      contain both state transitions and controller actions, but we cannot use
+	      the former to prompt the joint-position controller. Thus we formulate an adapter, treating
+	      \(\Delta q = q[t+1] - q[t]\) as a desired local transition. This lets us keep the
+	      trajectory-modeling strengths of DP while adding the missing controller
+	      semantics as a separate, testable component.
+	    </p>
+	    <p>
+      Another key contribution is understanding where the local adapter idea works. On
       Can and Lift, the adapter recovers high success and shows that
       joint-space desired motion is a viable representation for DP. On Square,
-      Tool Hang, and Transport, success drops when contact
+      Tool Hang, and Transport, success drops, as contact
       precision or multi-arm coordination dominates the task. The closed-loop
       sweep adds another negative result: repeatedly servoing the same desired
       delta does not reliably help, because each inner step also changes the
@@ -770,13 +748,14 @@ th {
       execution.
     </p>
     <p>
-      We also discuss limitations of our current system. All experiments
-      are in simulation, and the adapter assumes accurate low-dimensional state, which can be difficult to acquire in the rea lworld.
-      Additionally, synthetic inverse-controller data is expensive: Can MH alone used over two
-      million one-step probes. Finally, the
-      adapter is local. It can translate a desired joint transition, but it does
-      not reason about object pose, future contacts, or two-arm coordination
-      beyond what is already present in the policy output. This, POOP POOP
+	      We also discuss limitations of our current system. All experiments
+	      are in simulation, and the adapter assumes accurate low-dimensional state,
+	      which can be difficult to acquire in the real world.
+	      Additionally, synthetic inverse-controller data is expensive: Can MH alone used over two
+	      million one-step probes. Finally, the
+	      adapter is local. It can translate a desired joint transition, but it does
+	      not reason about object pose, future contacts, or two-arm coordination
+	      beyond what is already present in the policy output.
     </p>
   </section>
 
@@ -817,14 +796,27 @@ th {
         <a href="https://arxiv.org/abs/2108.03298">What Matters in Learning
         from Offline Human Demonstrations for Robot Manipulation</a>, CoRL 2021.
       </li>
-      <li id="ref-robosuite">
-        Yuke Zhu, Josiah Wong, Ajay Mandlekar, Roberto Martin-Martin, Abhishek
-        Joshi, Kevin Lin, Abhiram Maddukuri, Soroush Nasiriany, and Yifeng Zhu.
-        <a href="https://arxiv.org/abs/2009.12293">robosuite: A Modular
-        Simulation Framework and Benchmark for Robot Learning</a>, 2020.
-      </li>
-      <li id="ref-hdp">
-        Xiao Ma, Sumit Patidar, Iain Haughton, and Stephen James.
+	      <li id="ref-robosuite">
+	        Yuke Zhu, Josiah Wong, Ajay Mandlekar, Roberto Martin-Martin, Abhishek
+	        Joshi, Kevin Lin, Abhiram Maddukuri, Soroush Nasiriany, and Yifeng Zhu.
+	        <a href="https://arxiv.org/abs/2009.12293">robosuite: A Modular
+	        Simulation Framework and Benchmark for Robot Learning</a>, 2020.
+	      </li>
+	      <li id="ref-bridgedata">
+	        Homer Walke, Kevin Black, Abraham Lee, Moo Jin Kim, Max Du, Chongyi
+	        Zheng, Tony Zhao, Philippe Hansen-Estruch, Quan Vuong, Andre He,
+	        Vivek Myers, Kuan Fang, Chelsea Finn, and Sergey Levine.
+	        <a href="https://proceedings.mlr.press/v229/walke23a.html">BridgeData
+	        V2: A Dataset for Robot Learning at Scale</a>, CoRL 2023.
+	      </li>
+		      <li id="ref-franka-kitchen">
+		        Abhishek Gupta, Vikash Kumar, Corey Lynch, Sergey Levine, and Karol
+		        Hausman. <a href="https://arxiv.org/abs/1910.11956">Relay Policy
+		        Learning: Solving Long-Horizon Tasks via Imitation and Reinforcement
+		        Learning</a>, CoRL 2019.
+		      </li>
+	      <li id="ref-hdp">
+	        Xiao Ma, Sumit Patidar, Iain Haughton, and Stephen James.
         <a href="https://arxiv.org/abs/2403.03890">Hierarchical Diffusion Policy
         for Kinematics-Aware Multi-Task Robotic Manipulation</a>, CVPR 2024.
       </li>
