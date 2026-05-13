@@ -24,17 +24,17 @@ Results:
 
 ## Experiment Entries
 
-## 2026-05-12: FK Joint-Position Full-Pipeline Eval (Partial)
+## 2026-05-12: Analytic Joint-Position Full-Pipeline Eval (Partial)
 
 Status: completed for Can/Lift/Square PH/MH; Tool Hang PH and Transport PH/MH still pending at logging time
 
 Methods:
-- Goal: evaluate the deterministic FK joint-position adapter in the full deployment stack.
+- Goal: evaluate the deterministic analytic joint-position adapter in the full deployment stack.
 - Execution stack:
 
 ```text
 joint-delta DP policy -> desired joint delta + gripper
-FK joint-position adapter -> JOINT_POSITION command
+analytic joint-position adapter -> JOINT_POSITION command
 Robosuite JOINT_POSITION controller -> rollout reward / success
 ```
 
@@ -55,23 +55,23 @@ Results:
 | `transport_ph` | pending | pending | queued |
 | `transport_mh` | pending | pending | queued |
 
-- Interpretation: FK is not a learned inverse of the joint-position controller's closed-loop response. In full rollouts it compounds policy prediction error, controller tracking error, contact timing error, and state drift, so local/oracle tracking quality does not translate to robust task success.
+- Interpretation: the analytic adapter is not a learned inverse of the joint-position controller's closed-loop response. In full rollouts it compounds policy prediction error, controller tracking error, contact timing error, and state drift, so local/oracle tracking quality does not translate to robust task success.
 
-## 2026-05-12: FK Joint-Position Adapter-Only Tracking Eval
+## 2026-05-12: Analytic Joint-Position Adapter-Only Tracking Eval
 
 Status: completed
 
 Methods:
-- Goal: compare the learned inverse-controller adapter against the analytic forward-kinematics (FK) joint-position adapter on held-out demonstration tracking.
+- Goal: compare the learned inverse-controller adapter against the analytic joint-position adapter on held-out demonstration tracking.
 - Protocol: for each held-out demo timestep, compute the desired residual joint transition from the live replay state to the next demo joint state, execute one `JOINT_POSITION` controller step, and measure `|actual_delta - desired_delta|`.
 - Split: PH tasks used demos `150:200`; MH tasks used demos `250:300`; 50 demos per task.
 - Controller settings: per-joint command scale `0.25`, default Robosuite `JOINT_POSITION` gains and damping.
-- Slurm jobs: FK adapter-only jobs `830276`, `830278`, `830280`, `830282`, `830284`, `830286`, `830288`, `830290`, and `830292`; all completed with exit code `0`.
-- Output directories: `data/outputs/**/oracle_replay_fk_jp_learnedcfg_scale0p25_defaultkp_demo*`.
+- Slurm jobs: analytic adapter-only jobs `830276`, `830278`, `830280`, `830282`, `830284`, `830286`, `830288`, `830290`, and `830292`; all completed with exit code `0`.
+- Output directories: analytic joint-position oracle replay directories under `data/outputs/`.
 
 Results:
 
-| Dataset | Learned Delta MAE | Learned Rel. MAE | FK Delta MAE | FK Rel. MAE | FK Saturation |
+| Dataset | Learned Delta MAE | Learned Rel. MAE | Analytic Delta MAE | Analytic Rel. MAE | Analytic Saturation |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `can_ph` | `0.033875` | `0.762` | `0.072410` | `0.869` | `0.065` |
 | `can_mh` | `0.019667` | `0.767` | `0.046144` | `0.862` | `0.033` |
@@ -84,7 +84,7 @@ Results:
 | `transport_mh` | `0.169473` | `0.980` | `0.034956` | `0.862` | `0.015` |
 
 - Relative MAE is `mean(abs(actual_delta - desired_delta)) / mean(abs(desired_delta))`.
-- Interpretation: the learned adapter tracks better on most single-arm tasks, especially Lift and Can. The FK adapter is more consistent and substantially better on Transport MH, where the learned adapter's local tracking error is very large. Both adapters still have high relative error, so neither is a perfect one-step inverse for the joint-position controller.
+- Interpretation: the learned adapter tracks better on most single-arm tasks, especially Lift and Can. The analytic adapter is more consistent and substantially better on Transport MH, where the learned adapter's local tracking error is very large. Both adapters still have high relative error, so neither is a perfect one-step inverse for the joint-position controller.
 
 ## 2026-05-12: Sourish OSC Adapter Study From `origin/sour/obs-noise-param`
 
@@ -94,7 +94,7 @@ Methods:
 - Source read: `origin/sour/obs-noise-param:writeup.md` after `git fetch origin`.
 - Goal: compare ways to execute joint-delta Diffusion Policy checkpoints through the standard Robomimic `OSC_POSE` controller rather than the `JOINT_POSITION` controller used by the main adapter experiments.
 - Policies: joint-delta lowdim Diffusion Policy checkpoints trained for PH variants of Lift, Can, Square, Tool Hang, and Transport.
-- Deterministic adapter: `robomimic_joint_fk_to_eef_runner.py`.
+- Deterministic adapter: analytic OSC adapter runner from Sourish's branch.
   - Integrate predicted `Δq` onto the current joint state.
   - Run Franka Panda forward kinematics in a standalone MuJoCo model.
   - Convert the target end-effector pose into normalized `OSC_POSE` action space.
@@ -116,7 +116,7 @@ DP training status in Sourish's branch:
 | `tool_hang_ph` | `818757` | running at writeup time, about 4100/5000 epochs | `17h+` |
 | `transport_ph` | `821174` | resumed/running at writeup time, about 3900/5000 epochs | `19h+` |
 
-FK-to-OSC full-pipeline evals:
+Analytic OSC full-pipeline evals:
 
 | Task | OSC `kp` | Test Success | Notes |
 | --- | ---: | ---: | --- |
@@ -139,13 +139,13 @@ Probe-based NN-to-OSC adapter results:
 
 Demo-supervised NN-to-OSC full-pipeline evals:
 
-| Task | Probe NN-to-OSC | Demo-Supervised NN-to-OSC | FK-to-OSC Reference |
+| Task | Probe NN-to-OSC | Demo-Supervised NN-to-OSC | Analytic OSC Reference |
 | --- | ---: | ---: | ---: |
 | `lift_ph` | `0.00` quick / `0.02` Brian-quality | `0.90` | `0.94` |
 | `can_ph` | `0.02` quick | `0.64` | `0.88` |
 | `square_ph` | `0.00` quick | `0.48` | `0.50` at `kp=3000` |
 
-Action execution horizon / replanning sweep under FK-to-OSC:
+Action execution horizon / replanning sweep under the analytic OSC adapter:
 
 | Task | `n_action_steps=8` | `n_action_steps=1` | Notes |
 | --- | ---: | ---: | --- |
@@ -154,11 +154,11 @@ Action execution horizon / replanning sweep under FK-to-OSC:
 | `square_ph` | `0.34` at `kp=1000` | running in job `827030` | sweep still incomplete in source writeup |
 
 Interpretation:
-- For the native Robomimic OSC action interface, deterministic FK-to-OSC is the cleanest adapter: it converts a predicted joint target into the controller's own end-effector target rather than trying to learn a global inverse from arbitrary desired joint deltas to OSC commands.
+- For the native Robomimic OSC action interface, the deterministic analytic OSC adapter is the cleanest adapter: it converts a predicted joint target into the controller's own end-effector target rather than trying to learn a global inverse from arbitrary desired joint deltas to OSC commands.
 - Probe-based NN-to-OSC fails even with larger Brian-quality sampling. The writeup argues this is structural: `OSC_POSE -> Δq` is many-to-one and state/Jacobian/nullspace dependent, so the inverse is branch-ambiguous off the demonstration manifold.
-- Demo-supervised NN-to-OSC works much better because it learns the teleoperator's chosen OSC command branch on the demo manifold. It nearly matches FK-to-OSC on Lift and Square, but remains below FK-to-OSC on Can.
-- OSC gain matters: increasing `kp` from `1000` to `3000` improved Square FK-to-OSC from `0.34` to `0.50`.
-- A closed-loop FK variant on Square at `kp=1000` reportedly stayed at `0.34`, suggesting stale FK targets inside the action chunk were not the dominant bottleneck for that setting.
+- Demo-supervised NN-to-OSC works much better because it learns the teleoperator's chosen OSC command branch on the demo manifold. It nearly matches the analytic OSC adapter on Lift and Square, but remains below it on Can.
+- OSC gain matters: increasing `kp` from `1000` to `3000` improved Square analytic OSC from `0.34` to `0.50`.
+- A closed-loop analytic variant on Square at `kp=1000` reportedly stayed at `0.34`, suggesting stale targets inside the action chunk were not the dominant bottleneck for that setting.
 
 ## 2026-05-12: EEF/OSC Probe-Adapter Training And Evals
 

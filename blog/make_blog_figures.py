@@ -14,7 +14,7 @@ INLINE_IMAGE_NAMES = [
     "fig1_can_diagnostic.png",
     "fig3_adapter_tracking.png",
     "fig4_full_pipeline.png",
-    "fig5_fk_full_pipeline_partial.png",
+    "fig5_analytic_full_pipeline_partial.png",
     "fig6_closed_loop.png",
 ]
 
@@ -153,13 +153,13 @@ def adapter_tracking():
     learned_desired_abs_mean = np.array([0.044436, 0.025638, 0.015405, 0.015788,
                                          0.044627, 0.018093, 0.039096, 0.023223,
                                          0.172913])
-    fk_delta_mae = np.array([0.072410, 0.046144, 0.039751, 0.029289, 0.072662,
-                             0.035932, 0.049775, 0.041173, 0.034956])
-    fk_desired_abs_mean = np.array([0.083316, 0.053509, 0.046793, 0.034086,
-                                    0.081951, 0.041477, 0.056743, 0.048031,
-                                    0.040557])
+    analytic_delta_mae = np.array([0.072410, 0.046144, 0.039751, 0.029289, 0.072662,
+                                   0.035932, 0.049775, 0.041173, 0.034956])
+    analytic_desired_abs_mean = np.array([0.083316, 0.053509, 0.046793, 0.034086,
+                                          0.081951, 0.041477, 0.056743, 0.048031,
+                                          0.040557])
     learned_relative_mae = learned_delta_mae / learned_desired_abs_mean
-    fk_relative_mae = fk_delta_mae / fk_desired_abs_mean
+    analytic_relative_mae = analytic_delta_mae / analytic_desired_abs_mean
     x = np.arange(len(tasks))
     width = 0.36
 
@@ -173,10 +173,10 @@ def adapter_tracking():
     )
     ax.bar(
         x + width / 2,
-        fk_relative_mae,
+        analytic_relative_mae,
         color="#b75d69",
         width=width,
-        label="FK adapter",
+        label="Analytic adapter",
     )
     ax.set_ylim(0, 1.08)
     ax.set_ylabel("Relative joint-delta MAE")
@@ -194,7 +194,7 @@ def adapter_tracking():
     save(fig, "fig3_adapter_tracking.png")
 
 
-def fk_full_pipeline_partial_bar():
+def analytic_full_pipeline_partial_bar():
     tasks = ["Can\nPH", "Can\nMH", "Lift\nPH", "Lift\nMH", "Square\nPH", "Square\nMH"]
     success = np.array([0, 0, 9, 19, 0, 0], dtype=float) / 50.0
     x = np.arange(len(tasks))
@@ -206,7 +206,7 @@ def fk_full_pipeline_partial_bar():
     ax.set_xticks(x)
     ax.set_xticklabels(tasks)
     ax.grid(axis="x", visible=False)
-    save(fig, "fig5_fk_full_pipeline_partial.png")
+    save(fig, "fig5_analytic_full_pipeline_partial.png")
 
 
 def closed_loop_line_graph():
@@ -303,6 +303,6 @@ if __name__ == "__main__":
     diagnostic_bar()
     full_pipeline_bar()
     adapter_tracking()
-    fk_full_pipeline_partial_bar()
+    analytic_full_pipeline_partial_bar()
     closed_loop_line_graph()
     inline_assets()
