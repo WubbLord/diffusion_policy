@@ -13,6 +13,7 @@ Companion writeup to `EXPERIMENTS.md`. Covers the work done on top of the joint-
 - Oracle-replay (adapter alone, no DP, just replay demo Δq through adapter→env) confirms the probe-based failure is upstream of the policy: lift 0.48, can 0.24, square 0.00. Even given perfect demo Δq targets the OSC adapter cannot drive the arm well.
 - **Residual NN→OSC** (NN learns the residual `a_demo − FK→OSC(...)` and adds it back at inference) is in flight — predicted to match or beat FK→OSC because the worst case is "NN outputs 0 = FK→OSC alone". Numbers will land in section G.
 - **n_action_steps sweep** confirms controller tracking, not chunk drift, is the bottleneck: lift/can/square are all saturated across steps ∈ {1, 2, 4, 8} at the same kp. Section F.
+- **vs Brian's learned NN→JP** ([his blog](https://raw.githubusercontent.com/WubbLord/diffusion_policy/main/blog/index.html)): Can MH full pipeline 1.00; Can PH adapter-oracle 0.86. Our FK→OSC Can PH = 0.88, FK→JP Can PH = 0.86. Tied on PH adapter side. Transport PH adapter-oracle = 0.34 vs our 0.00 — clear headroom. Section D.
 
 ## What was built
 
@@ -236,9 +237,41 @@ Both tracks train with AdamW, `lr = 1e-4`, MSE loss between predicted OSC comman
 
 Comparing the two modes is the diagnostic: even when given perfect demo `Δq` targets (adapter-only oracle), the Track 1 NN-OSC adapter fails outright on square (0.00) and only partially recovers on lift (0.48). The full pipeline is bounded above by the oracle number, so the policy contribution to the failure is at most a couple of pp on lift and can. The probe-based adapter itself is the bottleneck.
 
-### D. Brian's NN→JP adapter — reference
+### D. Brian's NN→JP adapter — reference numbers (from his blog)
 
-For context, Brian's separately-trained NN inverse on the `JOINT_POSITION` controller (`reverse_controller_brian/can_ph_joint_position_*`) hits competitive numbers on can. The contrast is the point of section "Why NN→OSC fails".
+Source: [Brian Zhang, "Action-Interface Mismatch in Joint-Space Imitation Learning"](https://raw.githubusercontent.com/WubbLord/diffusion_policy/main/blog/index.html) (lives at `blog/index.html` in upstream `WubbLord/diffusion_policy:main`).
+
+**Headline (Figure 2, Can MH):** original EEF DP 49/50 (0.98), naive joint-delta direct to OSC 0/50, **joint-delta DP + NN→JP adapter = 50/50 (1.00)**.
+
+**Oracle replay — adapter alone, no DP (Table 1):**
+
+| Task | Δq MAE | Oracle replay success |
+|------|--------|------------------------|
+| Can PH | 0.0339 | **43/50 = 0.86** |
+| Can MH | 0.0197 | 38/50 = 0.76 |
+| Lift PH | 0.0088 | **46/50 = 0.92** |
+| Lift MH | 0.0117 | 43/50 = 0.86 |
+| Square PH | 0.0360 | 29/50 = 0.58 |
+| Square MH | 0.0136 | 30/50 = 0.60 |
+| Tool Hang PH | 0.0330 | 2/50 = 0.04 |
+| Transport PH | 0.0174 | **17/50 = 0.34** |
+| Transport MH | 0.1695 | 0/50 = 0.00 |
+
+**Full pipeline DP + NN→JP (Figure 4, qualitative):** "near-perfect success on Can and Lift, partial success on Square, fails on Tool Hang and Transport PH, reaches 5/50 on Transport MH." Only Can MH = 1.00 and Transport MH = 5/50 = 0.10 are quoted as hard numbers.
+
+**Probe-trained NN→OSC negative result (Table 2):** trained exactly like the NN→JP version, **full rollout 0/50 on every task** (Can/Lift/Square × PH/MH). Matches our Track 1 / Track 2 reproductions.
+
+#### Side-by-side vs our analytic adapters (Can PH baseline)
+
+| Adapter | Can PH full pipeline |
+|---------|----------------------|
+| Brian NN→JP, adapter-oracle (upper bound, no DP) | 0.86 |
+| Brian NN→JP, full DP+adapter | "near-perfect" (qualitative; no hard PH number) |
+| Our FK→OSC, full pipeline (kp=1000) | 0.88 |
+| Our FK→JP, full pipeline (kp=5000) | 0.86 |
+| Our Track-1 probe NN→OSC | 0.02 (re-confirms Table 2) |
+
+**Reading.** On Can PH our analytic adapters tie Brian's NN→JP adapter-oracle (0.86–0.88). Brian's Can MH full pipeline 1.00 is above our Can PH 0.88, but split + DP confound. **Biggest delta: Transport PH** — Brian's adapter-oracle hits 17/50 = 0.34, our FK→OSC full pipeline is 0.00. A 34 pp gap means there's real headroom in our dual-arm FK adapter (kp tuning or runner bug), not a fundamental ceiling.
 
 ### E. NN→OSC adapter — demo-supervised pipeline (new)
 
