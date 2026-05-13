@@ -317,23 +317,23 @@ th {
       here, and robosuite provides the simulator and controller abstractions.
 		      The logs contain states, state transitions, and OSC actions. Those OSC
 		      actions are commands for the original controller; once evaluation moves to
-		      joint-position control, the matching command label is missing. Other robotics datasets
-		      face the same limitation. Walke et al.'s BridgeData V2
+			      joint-position control, the matching command label is missing. Other robotics datasets
+			      make similarly fixed interface choices. Walke et al.'s BridgeData V2
 		      <a class="cite" href="#ref-bridgedata">[4]</a> uses a seven-dimensional
 		      action space made of six-dimensional Cartesian end-effector motion and
 		      gripper control. Franka Kitchen, introduced by Gupta et al.
 		      <a class="cite" href="#ref-franka-kitchen">[5]</a>, makes the opposite
 		      fixed choice: it provides ground-truth joint-position commands rather than
-		      end-effector commands. Both cases illustrate the same issue: offline robot
-		      datasets expose one controller interface, not interchangeable command labels.
+			      end-effector commands. Both cases illustrate the same issue: offline robot
+			      datasets expose one controller interface, not matched labels for alternative controllers.
 	    </p>
 	    <p>
 	      State-only imitation learning is another close connection. Radosavovic et
 	      al. <a class="cite" href="#ref-state-only">[10]</a> and Liu et al.
 	      <a class="cite" href="#ref-depo">[11]</a> learn inverse dynamics when
-      demonstrations do not provide the needed actions. State-only imitation infers actions because the dataset lacks them, while our adapter translates
-      existing demonstration-derived joint transitions into commands for a different controller because
-      RoboMimic’s provided actions are for the wrong action interface.
+	      demonstrations do not provide the needed actions. State-only imitation infers actions because the dataset lacks them. Our adapter instead translates
+	      demonstration-derived joint transitions into commands for a different controller, because
+	      RoboMimic’s provided actions are for the wrong action interface.
     </p>
 	    <p>
 	      This work is also related to action-modeling methods such as Implicit Behavioral Cloning (IBC)
@@ -739,7 +739,7 @@ th {
       precision or multi-arm coordination dominates the task. The closed-loop
       sweep adds another negative result: repeatedly servoing the same desired
       delta does not reliably help, because each inner step also changes the
-      timing of contact. Better local tracking does not automatically better task
+      timing of contact. Better local tracking does not automatically improve task
       execution.
     </p>
     <p>
@@ -775,7 +775,9 @@ th {
     </p>
     <p>
       Interesting future work could include testing our adapter pipeline concept on 
-      a policy that predicts absolute joint positions or joint velocities as well.
+      a policy that predicts absolute joint positions or joint velocities as well. 
+      We could also explore more complex architectures for the learned adapter, as 
+      a more accurate adapter is expected to improve full pipeline quality.
     </p>
   </section>
 
