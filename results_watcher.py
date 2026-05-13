@@ -54,6 +54,13 @@ TRACKED = [
      "data/outputs/2026.05.11/*tool_hang_lowdim_joint_delta_joint5k/eval_latest_nn_osc_brianquality/eval_log.json"),
     ("828217", "BQ NN-OSC transport",
      "data/outputs/2026.05.*/*transport_lowdim_joint_delta_joint5k/eval_latest_nn_osc_brianquality/eval_log.json"),
+    # New evals submitted 2026-05-12 21:30
+    ("830375", "tool_hang FK->OSC kp=5000",
+     "data/outputs/2026.05.11/*tool_hang_lowdim_joint_delta_joint5k/eval_latest_fk_osc_kp5000*/eval_log.json"),
+    ("830376", "transport FK->OSC kp=1000 (live latest.ckpt)",
+     "data/outputs/2026.05.*/*transport_lowdim_joint_delta_joint5k/eval_dualfix_kp1000_fk_eef/eval_log.json"),
+    ("830377", "transport FK->OSC kp=3000 (live latest.ckpt)",
+     "data/outputs/2026.05.*/*transport_lowdim_joint_delta_joint5k/eval_dualfix_kp3000_fk_eef/eval_log.json"),
     # transport DP resume (no eval_log, just confirms job completion)
     ("828593", "transport DP resume (5000 ep target)",
      "data/outputs/2026.05.*/*transport_lowdim_joint_delta_joint5k/checkpoints/latest.ckpt"),
