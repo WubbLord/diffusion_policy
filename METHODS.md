@@ -24,6 +24,68 @@ Results:
 
 ## Experiment Entries
 
+## 2026-05-12: FK Joint-Position Full-Pipeline Eval (Partial)
+
+Status: completed for Can/Lift/Square PH/MH; Tool Hang PH and Transport PH/MH still pending at logging time
+
+Methods:
+- Goal: evaluate the deterministic FK joint-position adapter in the full deployment stack.
+- Execution stack:
+
+```text
+joint-delta DP policy -> desired joint delta + gripper
+FK joint-position adapter -> JOINT_POSITION command
+Robosuite JOINT_POSITION controller -> rollout reward / success
+```
+
+- Eval protocol: `n_test=50`, latest corresponding joint-delta DP checkpoint, same rollout settings as the learned-adapter full-pipeline evals.
+- Completed tasks: Can PH/MH, Lift PH/MH, and Square PH/MH.
+
+Results:
+
+| Task | Test Success | Train-Init Success | Status |
+| --- | ---: | ---: | --- |
+| `can_ph` | `0/50` | `0/6` | complete |
+| `can_mh` | `0/50` | `0/6` | complete |
+| `lift_ph` | `9/50` | `2/6` | complete |
+| `lift_mh` | `19/50` | `3/6` | complete |
+| `square_ph` | `0/50` | `0/6` | complete |
+| `square_mh` | `0/50` | `0/6` | complete |
+| `tool_hang_ph` | pending | pending | queued |
+| `transport_ph` | pending | pending | queued |
+| `transport_mh` | pending | pending | queued |
+
+- Interpretation: FK is not a learned inverse of the joint-position controller's closed-loop response. In full rollouts it compounds policy prediction error, controller tracking error, contact timing error, and state drift, so local/oracle tracking quality does not translate to robust task success.
+
+## 2026-05-12: FK Joint-Position Adapter-Only Tracking Eval
+
+Status: completed
+
+Methods:
+- Goal: compare the learned inverse-controller adapter against the analytic forward-kinematics (FK) joint-position adapter on held-out demonstration tracking.
+- Protocol: for each held-out demo timestep, compute the desired residual joint transition from the live replay state to the next demo joint state, execute one `JOINT_POSITION` controller step, and measure `|actual_delta - desired_delta|`.
+- Split: PH tasks used demos `150:200`; MH tasks used demos `250:300`; 50 demos per task.
+- Controller settings: per-joint command scale `0.25`, default Robosuite `JOINT_POSITION` gains and damping.
+- Slurm jobs: FK adapter-only jobs `830276`, `830278`, `830280`, `830282`, `830284`, `830286`, `830288`, `830290`, and `830292`; all completed with exit code `0`.
+- Output directories: `data/outputs/**/oracle_replay_fk_jp_learnedcfg_scale0p25_defaultkp_demo*`.
+
+Results:
+
+| Dataset | Learned Delta MAE | Learned Rel. MAE | FK Delta MAE | FK Rel. MAE | FK Saturation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `can_ph` | `0.033875` | `0.762` | `0.072410` | `0.869` | `0.065` |
+| `can_mh` | `0.019667` | `0.767` | `0.046144` | `0.862` | `0.033` |
+| `lift_ph` | `0.008774` | `0.570` | `0.039751` | `0.850` | `0.000` |
+| `lift_mh` | `0.011748` | `0.744` | `0.029289` | `0.859` | `0.005` |
+| `square_ph` | `0.036040` | `0.808` | `0.072662` | `0.887` | `0.075` |
+| `square_mh` | `0.013600` | `0.752` | `0.035932` | `0.866` | `0.015` |
+| `tool_hang_ph` | `0.032994` | `0.844` | `0.049775` | `0.877` | `0.046` |
+| `transport_ph` | `0.017372` | `0.748` | `0.041173` | `0.857` | `0.018` |
+| `transport_mh` | `0.169473` | `0.980` | `0.034956` | `0.862` | `0.015` |
+
+- Relative MAE is `mean(abs(actual_delta - desired_delta)) / mean(abs(desired_delta))`.
+- Interpretation: the learned adapter tracks better on most single-arm tasks, especially Lift and Can. The FK adapter is more consistent and substantially better on Transport MH, where the learned adapter's local tracking error is very large. Both adapters still have high relative error, so neither is a perfect one-step inverse for the joint-position controller.
+
 ## 2026-05-12: Sourish OSC Adapter Study From `origin/sour/obs-noise-param`
 
 Status: completed for summarized runs; some branch jobs were still running or queued in the source writeup

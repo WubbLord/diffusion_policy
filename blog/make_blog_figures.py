@@ -11,10 +11,11 @@ BLOG_DIR = os.path.dirname(__file__)
 OUT_DIR = os.path.join(os.path.dirname(__file__), "assets")
 os.makedirs(OUT_DIR, exist_ok=True)
 INLINE_IMAGE_NAMES = [
-    "fig2_can_diagnostic.png",
-    "fig3_full_pipeline.png",
-    "fig4_oracle_replay.png",
-    "fig5_closed_loop.png",
+    "fig1_can_diagnostic.png",
+    "fig3_adapter_tracking.png",
+    "fig4_full_pipeline.png",
+    "fig5_fk_full_pipeline_partial.png",
+    "fig6_closed_loop.png",
 ]
 
 plt.rcParams.update({
@@ -109,7 +110,7 @@ def diagnostic_bar():
             va="bottom",
             fontweight="bold",
         )
-    save(fig, "fig2_can_diagnostic.png")
+    save(fig, "fig1_can_diagnostic.png")
 
 
 def full_pipeline_bar():
@@ -141,37 +142,71 @@ def full_pipeline_bar():
         bbox_to_anchor=(0.5, -0.18),
         ncol=2,
     )
-    save(fig, "fig3_full_pipeline.png")
+    save(fig, "fig4_full_pipeline.png")
 
 
-def oracle_replay():
+def adapter_tracking():
     tasks = ["Can\nPH", "Can\nMH", "Lift\nPH", "Lift\nMH", "Square\nPH",
-             "Square\nMH", "Tool\nHang", "Transport\nPH", "Transport\nMH"]
-    success = np.array([43, 38, 46, 43, 29, 30, 2, 17, 0]) / 50
-    delta_mae = np.array([0.033875, 0.019667, 0.008774, 0.011748, 0.036040,
-                          0.013600, 0.032994, 0.017372, 0.169473])
+             "Square\nMH", "Tool\nHang\nPH", "Transport\nPH", "Transport\nMH"]
+    learned_delta_mae = np.array([0.033875, 0.019667, 0.008774, 0.011748, 0.036040,
+                                  0.013600, 0.032994, 0.017372, 0.169473])
+    learned_desired_abs_mean = np.array([0.044436, 0.025638, 0.015405, 0.015788,
+                                         0.044627, 0.018093, 0.039096, 0.023223,
+                                         0.172913])
+    fk_delta_mae = np.array([0.072410, 0.046144, 0.039751, 0.029289, 0.072662,
+                             0.035932, 0.049775, 0.041173, 0.034956])
+    fk_desired_abs_mean = np.array([0.083316, 0.053509, 0.046793, 0.034086,
+                                    0.081951, 0.041477, 0.056743, 0.048031,
+                                    0.040557])
+    learned_relative_mae = learned_delta_mae / learned_desired_abs_mean
+    fk_relative_mae = fk_delta_mae / fk_desired_abs_mean
     x = np.arange(len(tasks))
-    fig, ax1 = plt.subplots(figsize=(8.6, 3.9))
-    ax1.bar(x, success, color="#33658a", width=0.62, label="Success")
-    ax1.set_ylim(0, 1.0)
-    ax1.set_ylabel("Oracle replay success")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(tasks)
-    ax1.grid(axis="x", visible=False)
-    ax2 = ax1.twinx()
-    ax2.plot(x, delta_mae, color="#b75d69", marker="o", linewidth=2.2, label="Delta MAE")
-    ax2.set_ylim(0, 0.18)
-    ax2.set_ylabel("Mean |actual delta - desired delta|")
-    handles = [ax1.patches[0], ax2.lines[0]]
-    ax1.legend(
-        handles,
-        ["Success", "Delta MAE"],
+    width = 0.36
+
+    fig, ax = plt.subplots(figsize=(9.4, 4.2))
+    ax.bar(
+        x - width / 2,
+        learned_relative_mae,
+        color="#2f855a",
+        width=width,
+        label="Learned adapter",
+    )
+    ax.bar(
+        x + width / 2,
+        fk_relative_mae,
+        color="#b75d69",
+        width=width,
+        label="FK adapter",
+    )
+    ax.set_ylim(0, 1.08)
+    ax.set_ylabel("Relative joint-delta MAE")
+    ax.set_xticks(x)
+    ax.set_xticklabels(tasks)
+    ax.grid(axis="x", visible=False)
+    ax.legend(
         frameon=True,
         facecolor="white",
         edgecolor="#cbd5df",
-        loc="upper right",
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=2,
     )
-    save(fig, "fig4_oracle_replay.png")
+    save(fig, "fig3_adapter_tracking.png")
+
+
+def fk_full_pipeline_partial_bar():
+    tasks = ["Can\nPH", "Can\nMH", "Lift\nPH", "Lift\nMH", "Square\nPH", "Square\nMH"]
+    success = np.array([0, 0, 9, 19, 0, 0], dtype=float) / 50.0
+    x = np.arange(len(tasks))
+
+    fig, ax = plt.subplots(figsize=(7.8, 3.8))
+    ax.bar(x, success, color="#b75d69", width=0.62)
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("Test success rate")
+    ax.set_xticks(x)
+    ax.set_xticklabels(tasks)
+    ax.grid(axis="x", visible=False)
+    save(fig, "fig5_fk_full_pipeline_partial.png")
 
 
 def closed_loop_line_graph():
@@ -261,12 +296,13 @@ def closed_loop_line_graph():
         bbox_to_anchor=(0.5, -0.34),
         ncol=2,
     )
-    save(fig, "fig5_closed_loop.png")
+    save(fig, "fig6_closed_loop.png")
 
 
 if __name__ == "__main__":
     diagnostic_bar()
     full_pipeline_bar()
-    oracle_replay()
+    adapter_tracking()
+    fk_full_pipeline_partial_bar()
     closed_loop_line_graph()
     inline_assets()
